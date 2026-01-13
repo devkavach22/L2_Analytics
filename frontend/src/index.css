@@ -1,0 +1,197 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 30 25% 90%;
+    --foreground: 25 30% 15%;
+
+    --card: 30 30% 92%;
+    --card-foreground: 25 30% 15%;
+
+    --popover: 30 30% 92%;
+    --popover-foreground: 25 30% 15%;
+
+    --primary: 24 88% 50%;
+    --primary-foreground: 0 0% 100%;
+    
+    --primary-light: 24 95% 65%;
+    --primary-dark: 24 90% 42%;
+
+    --secondary: 25 20% 25%;
+    --secondary-foreground: 30 25% 90%;
+
+    --muted: 30 20% 85%;
+    --muted-foreground: 25 15% 40%;
+
+    --accent: 24 88% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 30 20% 80%;
+    --input: 30 20% 85%;
+    --ring: 24 88% 50%;
+
+    --radius: 1rem;
+    
+    --gradient-hero: linear-gradient(135deg, hsl(24 88% 50%) 0%, hsl(24 95% 65%) 100%);
+    --gradient-card: linear-gradient(180deg, hsl(30 30% 92%) 0%, hsl(30 25% 88%) 100%);
+    --gradient-dark: linear-gradient(180deg, hsl(25 20% 20%) 0%, hsl(25 25% 25%) 100%);
+    
+    --shadow-card: 0 4px 20px -2px hsl(24 88% 50% / 0.15);
+    --shadow-hover: 0 8px 30px -4px hsl(24 88% 50% / 0.25);
+    
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 20 14% 20%;
+    --sidebar-primary: 24 88% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 30 100% 97%;
+    --sidebar-accent-foreground: 20 14% 20%;
+    --sidebar-border: 30 30% 90%;
+    --sidebar-ring: 24 88% 50%;
+  }
+
+  .dark {
+    --background: 25 20% 18%;
+    --foreground: 30 25% 90%;
+
+    --card: 25 20% 22%;
+    --card-foreground: 30 25% 90%;
+
+    --popover: 25 20% 22%;
+    --popover-foreground: 30 25% 90%;
+
+    --primary: 24 88% 50%;
+    --primary-foreground: 0 0% 100%;
+    
+    --primary-light: 24 95% 65%;
+    --primary-dark: 24 90% 42%;
+
+    --secondary: 25 20% 25%;
+    --secondary-foreground: 30 25% 90%;
+
+    --muted: 25 15% 30%;
+    --muted-foreground: 30 20% 65%;
+
+    --accent: 24 88% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 25 15% 30%;
+    --input: 25 15% 30%;
+    --ring: 24 88% 50%;
+    
+    --gradient-hero: linear-gradient(135deg, hsl(24 88% 50%) 0%, hsl(24 95% 65%) 100%);
+    --gradient-card: linear-gradient(180deg, hsl(25 20% 22%) 0%, hsl(25 20% 25%) 100%);
+    --gradient-dark: linear-gradient(180deg, hsl(25 20% 18%) 0%, hsl(25 20% 22%) 100%);
+    
+    --sidebar-background: 20 20% 10%;
+    --sidebar-foreground: 30 100% 97%;
+    --sidebar-primary: 24 88% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 20 20% 15%;
+    --sidebar-accent-foreground: 30 100% 97%;
+    --sidebar-border: 20 20% 20%;
+    --sidebar-ring: 24 88% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-crimson;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in-up {
+    animation: fadeInUp 0.6s ease-out forwards;
+  }
+  
+  .animate-float {
+    animation: float 3s ease-in-out infinite;
+  }
+  
+  .hover-lift {
+    transition: var(--transition-smooth);
+  }
+  
+  .hover-lift:hover {
+    transform: translateY(-8px);
+    box-shadow: var(--shadow-hover);
+  }
+  
+  .gradient-text {
+    background: var(--gradient-hero);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  .wave-top {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    overflow: hidden;
+    line-height: 0;
+  }
+  
+  .wave-top svg {
+    position: relative;
+    display: block;
+    width: calc(100% + 1.3px);
+    height: 80px;
+  }
+  
+  .wave-bottom {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    overflow: hidden;
+    line-height: 0;
+    transform: rotate(180deg);
+  }
+  
+  .wave-bottom svg {
+    position: relative;
+    display: block;
+    width: calc(100% + 1.3px);
+    height: 80px;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-20px);
+  }
+}

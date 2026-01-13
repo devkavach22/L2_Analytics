@@ -1,0 +1,34 @@
+# FastAPI Core
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+
+# OCR
+torch==2.9.0
+torchvision==0.24.0
+easyocr==1.7.1
+numpy==1.26.4
+pillow==10.4.0
+opencv-python-headless==4.9.0.80  # use headless for server environments to avoid GUI issues
+
+# File + PDF + DOCX Processing
+pdf2image==1.17.0
+pdfplumber==0.11.2
+mammoth==1.4.19
+PyMuPDF==1.20.1
+python-docx==1.1.0
+fpdf==1.7.2
+
+# API Support
+python-multipart==0.0.9
+python-dotenv==1.0.1
+requests==2.32.3
+
+# CSV / Excel
+pandas==2.2.2
+openpyxl==3.1.5
+
+# LLM AGENT (NO LangChain)
+ollamafreeapi==0.1.3
+
+# Utilities
+scikit-image==0.22.0
