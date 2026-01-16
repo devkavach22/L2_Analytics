@@ -260,7 +260,7 @@ async def agentic_report(req: ReportRequest):
         result = pipeline.run(
             user_id=req.user_id,
             report_type=req.report_type,
-            new_file_text=req.new_file_text,
+            # new_file_text=req.new_file_text,
             filename=req.filename
         )
 

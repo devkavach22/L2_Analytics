@@ -38,6 +38,9 @@ class AgenticReportPipeline:
     def __init__(self, stream_callback=None):
         self.stream_callback = stream_callback
 
+        # ---------------------------
+        # MongoDB
+        # ---------------------------
         self.client = MongoClient(os.getenv("MONGO_URL"))
         self.db = self.client[os.getenv("MONGO_DB_NAME")]
         self.collection = self.db["ocrrecords"]
@@ -45,7 +48,7 @@ class AgenticReportPipeline:
         self.llm = load_llm()
 
         # ---------------------------
-        # AGENT INITIALIZATION
+        # Agents
         # ---------------------------
         self.executive_agent = ExecutiveOverviewAgent()
         self.case_background_agent = CaseBackgroundAgent()
@@ -80,53 +83,67 @@ class AgenticReportPipeline:
 
     # --------------------------------------------------
     def _safe_collection_name(self, name: str) -> str:
-        safe = re.sub(r"[^a-zA-Z0-9._-]", "_", str(name))
-        return safe.strip("_")[:120]
+        return re.sub(r"[^a-zA-Z0-9._-]", "_", str(name))[:120]
 
     # --------------------------------------------------
-    # RAG (VECTOR RETRIEVAL ONLY — MATCHES VectorStoreManager)
+    # ✅ PROPER RAG (GROUNDING ONLY)
     # --------------------------------------------------
-    def _build_rag_context(self, text: str, filename: str) -> Tuple[str, Dict]:
-        self._stream("status", "📦 Preparing contextual knowledge")
+    def _build_rag_context(self, extracted_text: str, filename: str) -> Tuple[str, Dict]:
+        self._stream("status", "📦 Building grounded RAG context")
 
-        vs = VectorStoreManager(self._safe_collection_name(filename or "document"))
+        collection_name = self._safe_collection_name(filename or "document")
+        vs = VectorStoreManager(collection_name)
 
+        # ---------------------------
+        # Vector Store
+        # ---------------------------
         if not vs.load_vector_store():
-            self._stream("status", "📚 Creating vector embeddings")
-            vs.create_vector_store(text)
+            self._stream("status", "📚 Creating embeddings from OCR text")
+            vs.create_vector_store(extracted_text)
 
-        self._stream("status", "🔍 Retrieving relevant document sections")
+        self._stream("status", "🔍 Retrieving relevant knowledge chunks")
 
-        retriever = vs.get_retriever(k=4)
+        retriever = vs.get_retriever(k=5)
+
+        # IMPORTANT: query ≠ raw OCR
         docs = retriever.get_relevant_documents(
-            "key facts, entities, risks, behavior, conclusions"
+            "Summarize key facts, entities, risks, decisions, behavior and conclusions"
         )
 
-        chunks = [doc.page_content for doc in docs]
-        combined_context = "\n\n".join(chunks)
+        if not docs:
+            self._stream("status", "⚠️ No relevant chunks found, using limited fallback")
+            rag_context = extracted_text[:2000]
+        else:
+            rag_context = "\n\n".join(doc.page_content for doc in docs)
 
-        entities = perform_ner(text[:4000])
+        # ---------------------------
+        # NER (for metadata only)
+        # ---------------------------
+        entities = perform_ner(extracted_text[:4000])
         self._stream(
             "status",
-            f"🧠 Extracted {sum(len(v) for v in entities.values())} named entities"
+            f"🧠 Extracted {sum(len(v) for v in entities.values())} entities"
         )
 
-        return combined_context, entities
+        return rag_context, entities
 
     # --------------------------------------------------
-    # AGENT EXECUTION WITH LIVE STREAMING
+    # AGENT EXECUTION (STREAMED)
     # --------------------------------------------------
     def _run_agent(self, agent_name: str, agent, context: str):
         self._stream("agent_start", agent_name)
 
         try:
-            result = agent.run(context) if hasattr(agent, "run") else agent.analyze_document(context)
+            if hasattr(agent, "run"):
+                result = agent.run(context)
+            else:
+                result = agent.analyze_document(context)
 
             if isinstance(result, str):
-                for block in result.split("\n\n"):
+                for chunk in result.split("\n\n"):
                     self._stream("agent_chunk", {
                         "agent": agent_name,
-                        "text": block
+                        "text": chunk
                     })
 
             self._stream("agent_done", agent_name)
@@ -140,42 +157,38 @@ class AgenticReportPipeline:
     # --------------------------------------------------
     # MAIN PIPELINE
     # --------------------------------------------------
-    def run(self, user_id: str, report_type: str, filename: str = None, new_file_text: str = None):
+    def run(self, user_id: str, report_type: str, filename: str = None):
 
-        self._stream("status", "🚀 Generating professional intelligence report")
+        self._stream("status", "🚀 Generating professional grounded report")
 
         user_query = self._user_query(user_id)
 
         # ---------------------------
-        # TEXT SOURCE
+        # FETCH OCR FROM MONGO ONLY
         # ---------------------------
-        if new_file_text:
-            extracted_text = clean_text(new_file_text)
-            filename = filename or "uploaded_document"
-        else:
-            record = None
-            if filename:
-                record = self.collection.find_one({
-                    "userId": user_query,
-                    "originalFilename": filename
-                })
+        record = None
+        if filename:
+            record = self.collection.find_one({
+                "userId": user_query,
+                "originalFilename": filename
+            })
 
-            if not record:
-                record = self.collection.find_one(
-                    {"userId": user_query},
-                    sort=[("_id", -1)]
-                )
+        if not record:
+            record = self.collection.find_one(
+                {"userId": user_query},
+                sort=[("_id", -1)]
+            )
 
-            if not record:
-                return {"success": False, "error": "No OCR document found"}
+        if not record:
+            return {"success": False, "error": "No OCR document found"}
 
-            extracted_text = clean_text(record.get("extractedText", ""))
-            filename = record.get("originalFilename", "document")
+        extracted_text = clean_text(record.get("extractedText", ""))
+        filename = record.get("originalFilename", "document")
 
-        extracted_text = extracted_text[:12000]
+        extracted_text = extracted_text[:15000]
 
         # ---------------------------
-        # RAG CONTEXT
+        # RAG
         # ---------------------------
         rag_context, entities = self._build_rag_context(extracted_text, filename)
 
@@ -202,7 +215,7 @@ class AgenticReportPipeline:
             results[name] = self._run_agent(name, agent, rag_context)
 
         # ---------------------------
-        # FINAL REPORT PAYLOAD
+        # REPORT PAYLOAD
         # ---------------------------
         report_payload = {
             "title": report_type,
@@ -219,8 +232,7 @@ class AgenticReportPipeline:
         return {
             "success": True,
             "report_url": f"/static/reports/{os.path.basename(report_path)}",
-            "entities": entities,
-            "raw_output": report_payload
+            "entities": entities
         }
 
 

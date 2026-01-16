@@ -150,7 +150,7 @@ class VectorStoreManager:
         if self.llama_index is None:
             raise ValueError("LlamaIndex not initialized")
 
-        llm = Ollama(model="llama3.1:8b",timeout=900,temperature=0.2,max_new_tokens=2048)
+        llm = Ollama(model="llama3",timeout=900,temperature=0.2,max_new_tokens=2048)
 
         # return self.llama_index.as_query_engine(llm=llm)
         return self.llama_index.as_query_engine(
