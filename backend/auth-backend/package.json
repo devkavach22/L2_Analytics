@@ -46,7 +46,6 @@
     "node-poppler": "^9.0.1",
     "node-tesseract-ocr": "^2.2.1",
     "nodemailer": "^7.0.10",
-    "nodemon": "^3.1.11",
     "ocr-space-api": "^1.0.1",
     "pdf-lib": "^1.17.1",
     "pdf-merger-js": "^5.1.2",
