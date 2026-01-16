@@ -1,158 +1,100 @@
 import os
-import pdfkit
-from jinja2 import Environment, FileSystemLoader, Template
 from datetime import datetime
+from jinja2 import Environment, FileSystemLoader
+import pdfkit
 
-# -----------------------------
-# Directories
-# -----------------------------
-TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
-OUTPUT_DIR = "static/reports"
-os.makedirs(TEMPLATE_DIR, exist_ok=True)
+BASE_DIR = os.path.dirname(__file__)
+TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
+OUTPUT_DIR = os.path.join("static", "reports")
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def safe_get(d, key, default=""):
-    if not isinstance(d, dict):
-        return default
-    val = d.get(key, default)
-    return default if val in [None, "", [], {}] else val
+env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
 
 
-def normalize_text(val, default="Not Available"):
-    if isinstance(val, dict):
-        return "<br/>".join(f"<b>{k}:</b> {v}" for k, v in val.items())
-    if isinstance(val, list):
-        return ", ".join(map(str, val)) if val else default
-    return str(val) if val else default
+# --------------------------------------------------
+# SANITIZER (CRITICAL – PREVENT OCR GARBAGE)
+# --------------------------------------------------
+def clean_section(text):
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    clean_lines = []
+
+    for line in lines:
+        line = line.strip()
+
+        # Drop OCR junk
+        if len(line) < 3:
+            continue
+        if line.count(":") > 5:
+            continue
+        if "Delhi Police - Criminal Dossier System" in line:
+            continue
+
+        clean_lines.append(line)
+
+    return "\n".join(clean_lines)
 
 
-def format_list(item_list):
-    if isinstance(item_list, dict):
-        return "".join(
-            f"<li><b>{k}:</b> {', '.join(v) if isinstance(v, list) else v}</li>"
-            for k, v in item_list.items()
-        )
-    if isinstance(item_list, list) and item_list:
-        return "".join(f"<li>{str(i)}</li>" for i in item_list)
-    return "<li>Not Available</li>"
+# --------------------------------------------------
+# MAIN RENDER FUNCTION
+# --------------------------------------------------
+def render_html_report(report_data: dict, report_name: str, user_id: str):
+    template = env.get_template("professional_report.html")
 
-# -----------------------------
-# Main Render Function
-# -----------------------------
-def render_html_report(data, report_type, user_id):
-    """
-    Renders a professional structured HTML report and converts it to PDF.
-    Supports both OLD and NEW agent payload formats.
-    """
+    structured_sections = [
+        ("Executive Summary", report_data.get("executive_summary")),
+        ("Case Background", report_data.get("case_background")),
+        ("Document Analysis", report_data.get("document_analysis")),
+        ("Behavioral Analysis", report_data.get("behavior_analysis")),
+        ("Cognitive Analysis", report_data.get("cognitive_analysis")),
+        ("Risk Assessment", report_data.get("risk_analysis")),
+        ("Sentiment Analysis", report_data.get("sentiment_analysis")),
+        ("Decision Analysis", report_data.get("decision_analysis")),
+        ("Trend Analysis", report_data.get("trend_analysis")),
+        ("Key Entities", report_data.get("entities")),
+        ("Recommendations", report_data.get("recommendations")),
+        ("Final Summary", report_data.get("final_summary")),
+    ]
 
-    template_name = "report_professional.html"
+    sections = []
+    for title, content in structured_sections:
+        cleaned = clean_section(str(content))
+        if cleaned:
+            sections.append({
+                "title": title,
+                "content": cleaned
+            })
 
-    try:
-        template = env.get_template(template_name)
-    except Exception:
-        template = Template("""
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>{{ report.title }}</title>
-            <style>
-                body { font-family: Arial, sans-serif; margin: 35px; color:#222; }
-                h1 { font-size: 30px; }
-                h2 { margin-top: 28px; border-bottom: 2px solid #eee; padding-bottom: 4px; }
-                table { width:100%; border-collapse: collapse; margin-top:10px; }
-                th, td { border:1px solid #ccc; padding:8px; text-align:left; }
-                th { background:#f5f5f5; }
-                ul { margin-left:18px; }
-            </style>
-        </head>
-        <body>
+    html = template.render(
+        title=report_data.get("title", "Intelligence Report"),
+        created_on=report_data.get("created_on", datetime.utcnow().strftime("%Y-%m-%d")),
+        created_by=report_data.get("created_by", "AI Intelligence Engine"),
+        sections=sections
+    )
 
-        <h1>{{ report.title }}</h1>
-        <p><b>Date:</b> {{ report.date }}</p>
-        <p><b>Source Document:</b> {{ report.source }}</p>
+    html_path = os.path.join(OUTPUT_DIR, f"{user_id}_{report_name}.html")
+    pdf_path = html_path.replace(".html", ".pdf")
 
-        <h2>Executive Summary</h2>
-        <p>{{ report.summary }}</p>
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html)
 
-        <h2>Key Findings</h2>
-        <ul>
-            {{ report.entities_html | safe }}
-        </ul>
+    pdfkit.from_file(
+        html_path,
+        pdf_path,
+        options={
+            "page-size": "A4",
+            "margin-top": "20mm",
+            "margin-bottom": "20mm",
+            "margin-left": "15mm",
+            "margin-right": "15mm",
+            "encoding": "UTF-8",
+        }
+    )
 
-        <h2>Risk Analysis</h2>
-        <p>{{ report.risk }}</p>
-
-        <h2>Sentiment Analysis</h2>
-        <p>{{ report.sentiment }}</p>
-
-        <h2>Recommendations</h2>
-        <ul>
-            {{ report.recommendations_html | safe }}
-        </ul>
-
-        </body>
-        </html>
-        """)
-
-    # -----------------------------
-    # Normalize incoming payload
-    # -----------------------------
-    if not isinstance(data, dict):
-        data = {}
-
-    report = {
-        "title": safe_get(data, "title", "Executive Report"),
-        "date": safe_get(data, "date", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        "source": safe_get(data, "source_document", "OCR File"),
-        "summary": normalize_text(
-            safe_get(data, "executive_summary", safe_get(data, "summary"))
-        ),
-        "entities_html": format_list(
-            safe_get(
-                data,
-                "entities",
-                safe_get(safe_get(data, "key_findings", {}), "Detected Entities", {})
-            )
-        ),
-        "risk": normalize_text(safe_get(data, "risk_analysis", safe_get(data, "risk"))),
-        "sentiment": normalize_text(
-            safe_get(data, "sentiment_analysis", safe_get(data, "sentiment"))
-        ),
-        "recommendations_html": format_list(
-            safe_get(data, "recommendations", [])
-        )
-    }
-
-    # -----------------------------
-    # Render HTML
-    # -----------------------------
-    html = template.render(report=report)
-
-    safe_report_type = report_type.replace(" ", "_").lower()
-    path = os.path.join(OUTPUT_DIR, f"{user_id}_{safe_report_type}.pdf")
-
-    options = {
-        "enable-local-file-access": "",
-        "encoding": "UTF-8",
-        "no-outline": None,
-        "page-size": "A4",
-        "margin-top": "15mm",
-        "margin-bottom": "15mm",
-        "margin-left": "15mm",
-        "margin-right": "15mm",
-    }
-
-    try:
-        pdfkit.from_string(html, path, options=options)
-        return path
-    except Exception as e:
-        print("❌ PDF generation failed:", e)
-        return None
+    return pdf_path
 
 # import os, pdfkit
 # from jinja2 import Environment, FileSystemLoader
