@@ -4,7 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import authRoutes from "./routes/authRoutes.js";
-import pdfRoutes from "./routes/pdfRoutes.js";
+// import pdfRoutes from "./routes/pdfRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import passwordRoutes from "./routes/passwordRoutes.js";
 import { runIndexingPipeline } from "./search/indexingPipeline.js";
@@ -49,7 +49,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 app.use("/api/auth", authRoutes);
-app.use("/api/pdf", pdfRoutes);
+// app.use("/api/pdf", pdfRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api", passwordRoutes);
 
