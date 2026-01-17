@@ -12,9 +12,10 @@ import OcrRecord from "../models/OcrRecords.js";
 import { analyzeReport } from "../controllers/reportController.js";
 import axios from "axios";
 import Link from "../models/Link.js";
-import pkg from 'uuid';
+import { v4 as uuidv4 } from 'uuid';
+
 import { message } from "antd";
-const { v4: uuidv4 } = pkg;
+// const { v4: uuidv4 } = pkg;
 // import { viewFile } from "../controllers/authController.js";
 
 const router = express.Router();

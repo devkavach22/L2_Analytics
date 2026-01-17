@@ -2,13 +2,12 @@
 import subprocess
 import time
 import requests
-import os
 from typing import Optional, List
 
 from langchain_ollama import ChatOllama
 from langchain_core.callbacks import CallbackManager
 
-OLLAMA_MODEL = "llama3.1:8b"
+OLLAMA_MODEL = "llama3"
 
 _cached_llm = None
 
@@ -30,15 +29,13 @@ def check_and_pull_model(model_name: str):
         )
         if model_name not in result.stdout:
             print(f"⬇ Pulling Ollama model: {model_name}")
-            subprocess.run(
-                ["ollama", "pull", model_name],
-                check=True
-            )
+            subprocess.run(["ollama", "pull", model_name], check=True)
     except Exception as e:
         print(f"⚠ Ollama model check failed: {e}")
 
 
 def _load_hf_fallback():
+    # ⚠ Keep fallback SIMPLE — no structured output
     from langchain_huggingface import ChatHuggingFace
 
     print("🔁 Falling back to HuggingFace LLM")
@@ -46,7 +43,8 @@ def _load_hf_fallback():
     return ChatHuggingFace(
         repo_id="meta-llama/Meta-Llama-3.1-8B-Instruct",
         temperature=0.2,
-        max_new_tokens=2048
+        max_new_tokens=2048,
+        streaming=False
     )
 
 
@@ -60,6 +58,8 @@ def load_llm(
     """
     global _cached_llm
 
+    callback_manager = CallbackManager(callbacks or [])
+
     # ---------- STREAMING ----------
     if streaming:
         try:
@@ -68,7 +68,9 @@ def load_llm(
                 model=OLLAMA_MODEL,
                 temperature=0.2,
                 streaming=True,
-                callbacks=CallbackManager(callbacks or [])
+                think=False,                 # 🔥 critical
+                callback_manager=callback_manager,
+                tools=None                  # 🔥 disable tool calling
             )
         except Exception:
             return _load_hf_fallback()
@@ -95,7 +97,10 @@ def load_llm(
             base_url="http://localhost:11434",
             model=OLLAMA_MODEL,
             temperature=0.2,
-            streaming=False
+            streaming=False,
+            think=False,                 # 🔥 critical
+            callback_manager=callback_manager,
+            tools=None                  # 🔥 disable tool calling
         )
 
         print("✔ Ollama LLM ready.")
@@ -105,7 +110,6 @@ def load_llm(
         print(f"❌ Ollama failed: {e}")
         _cached_llm = _load_hf_fallback()
         return _cached_llm
-
 
 
 # # app/tools/llm_loader.py
