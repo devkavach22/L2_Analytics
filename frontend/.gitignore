@@ -1,6 +1,6 @@
 # dependencies
-/node_modules
-/.pnp
+node_modules/
+.pnp
 .pnp.js
 
 # testing
@@ -9,6 +9,7 @@
 # production
 /build
 build.zip
+
 # misc
 .DS_Store
 .env.local

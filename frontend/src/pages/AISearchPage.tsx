@@ -23,6 +23,10 @@ import { useReport, useWorkspaceFiles } from "@/hooks";
 import { useChatStream } from "../components/ai-search/useStreamHook";
 import InternalChatPanel from "./InternalChatPanel";
 import WebSearchChatPanel from "./WebSearchChatPanel";
+import MindMap from "@/components/MindMap";
+import { mindMapData } from "@/data/mindMapData";
+import { useState } from "react";
+import StudioPopup from "./StudioPopup";
 
 export default function AISearchPage() {
   const {
@@ -49,6 +53,8 @@ export default function AISearchPage() {
 
   const handleGenerate = () => generate(workspaceFiles);
   const { streamedText, isGenerating } = useChatStream("/api/chat/stream");
+    const [studioOpen, setStudioOpen] = useState(false);
+
 
   const handleDownloadCurrent = () => {
     if (currentReport) {
@@ -88,6 +94,9 @@ export default function AISearchPage() {
         onDownload={handleDownloadCurrent}
       />
 
+            <StudioPopup isOpen={studioOpen} onClose={() => setStudioOpen(false)} />
+
+
       {/* Main Content */}
       <main className="relative z-10 flex-grow container mx-auto px-4 pt-32 pb-24 max-w-7xl">
         {/* Page Header */}
@@ -122,6 +131,17 @@ export default function AISearchPage() {
         <div className="mb-16 relative z-20">
           <SpotlightSection className="rounded-[2.5rem] shadow-2xl shadow-orange-900/5">
             <GlowCard className="border-0 shadow-none bg-white/80 backdrop-blur-2xl">
+
+              <div className="col-span-12 flex justify-between items-center">
+            <button
+              onClick={() => setStudioOpen(true)}
+              className="bg-black text-white px-4 py-2 rounded m-8 hover:bg-gray-800"
+            >
+              Studio
+            </button>
+          </div>
+
+
               <div className="p-2 md:p-10">
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-10">
                   {/* Left Panel: Configuration */}
@@ -161,14 +181,20 @@ export default function AISearchPage() {
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 w-full my-16">
                   {/* Internal Report Chat */}
                   <div className="bg-[#0f172a] rounded-[2rem] overflow-hidden shadow-xl border border-slate-800 flex flex-col min-h-[350px]">
-                    <InternalChatPanel reportText={streamedText} />
+                   <WebSearchChatPanel />
                   </div>
 
                   {/* Web Search Chat */}
                   <div className="bg-[#0f172a] rounded-[2rem] overflow-hidden shadow-xl border border-slate-800 flex flex-col min-h-[350px]">
-                    <WebSearchChatPanel />
+                  
+                      <InternalChatPanel reportText={streamedText} />
                   </div>
                 </div>
+
+                 <div style={{ padding: 20 }}>
+      <h2>The Algorithmic Mirror</h2>
+      <MindMap data={mindMapData} />
+    </div>
               </div>
             </GlowCard>
           </SpotlightSection>
