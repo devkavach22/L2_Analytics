@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 import json
+import re
 from pydantic import BaseModel, ValidationError
 from .llm_loader import load_llm
 
@@ -29,9 +30,35 @@ class ReportSelectorAgent:
     (NotebookLM 'Reports' tab equivalent)
     """
 
+    ALLOWED_TYPES = {
+        "executive_summary",
+        "technical_report",
+        "research_report",
+        "study_notes",
+    }
+
     def __init__(self):
         self.llm = load_llm()
 
+    # ---------------------------
+    # JSON extractor (CRITICAL)
+    # ---------------------------
+    def _extract_json(self, text: str) -> dict:
+        """
+        Extract first valid JSON object from LLM output
+        """
+        if not text:
+            raise ValueError("Empty LLM response")
+
+        match = re.search(r"\{[\s\S]*\}", text)
+        if not match:
+            raise ValueError("No JSON object found")
+
+        return json.loads(match.group(0))
+
+    # ---------------------------
+    # Main
+    # ---------------------------
     def run(
         self,
         summary: Dict,
@@ -53,22 +80,17 @@ Important Entities:
 User preferred report type (optional):
 {preferred_type}
 
-Your task:
-1. Decide the most suitable report type.
-2. Define clear report sections.
-3. Each section must be useful and non-overlapping.
-
 Allowed report types:
 - executive_summary
 - technical_report
 - research_report
 - study_notes
 
-IMPORTANT RULES:
-- Respond with ONLY valid JSON
+STRICT RULES:
+- Output ONLY valid JSON
 - No markdown
 - No explanations
-- No trailing text
+- No extra text
 
 JSON FORMAT:
 {{
@@ -86,18 +108,28 @@ JSON FORMAT:
         # ---- LLM CALL ----
         response = self.llm.invoke(prompt)
 
-        # ---- Extract text safely ----
-        content = response.content if hasattr(response, "content") else str(response)
+        content = (
+            response.content
+            if hasattr(response, "content")
+            else str(response)
+        )
 
-        # ---- Parse JSON ----
+        # ---- Parse & validate ----
         try:
-            data = json.loads(content)
+            data = self._extract_json(content)
+
+            # Normalize report type
+            if data.get("report_type") not in self.ALLOWED_TYPES:
+                data["report_type"] = (
+                    preferred_type
+                    if preferred_type in self.ALLOWED_TYPES
+                    else "technical_report"
+                )
+
             return ReportSchema(**data)
-        except json.JSONDecodeError as e:
+
+        except (json.JSONDecodeError, ValidationError, ValueError) as e:
             raise RuntimeError(
-                f"ReportSelectorAgent returned invalid JSON:\n{content}"
-            ) from e
-        except ValidationError as e:
-            raise RuntimeError(
-                f"ReportSelectorAgent JSON schema mismatch:\n{content}"
+                "❌ ReportSelectorAgent failed to produce valid schema\n\n"
+                f"RAW OUTPUT:\n{content}"
             ) from e

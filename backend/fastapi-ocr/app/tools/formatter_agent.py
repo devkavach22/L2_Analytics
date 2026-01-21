@@ -30,9 +30,10 @@ try:
     from .nlp_pipeline import NLP_Pipeline
     from .rag_engine import RAGEngine
 except ImportError:
-    logger.warning("⚠️ NLP/RAG modules not found. Running in standalone mode.")
+    # logger.warning("⚠️ NLP/RAG modules not found. Running in standalone mode.")
     NLP_Pipeline = None
     RAGEngine = None
+    RAG_ENABLED = False
 
 # We defer checking PDF backend availability until runtime; skip logging here.
 

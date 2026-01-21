@@ -7,6 +7,11 @@ from bson import ObjectId
 from dotenv import load_dotenv
 
 # -----------------------------
+# Disable Chroma telemetry (early)
+# -----------------------------
+os.environ["ANONYMIZED_TELEMETRY"] = "false"
+
+# -----------------------------
 # Existing Agents (UNCHANGED)
 # -----------------------------
 from .tools.summarizer_agent import SummarizerAgent
@@ -21,7 +26,7 @@ from .tools.cognitive_analysis import CognitiveAnalysisAgent
 from .tools.sentiment_agent import SentimentAnalysisAgent
 
 # -----------------------------
-# 🔥 NEW NotebookLM Agents
+# 🔥 NotebookLM Agents
 # -----------------------------
 from .tools.report_selector_agent import ReportSelectorAgent
 from .tools.report_generator_agent import ReportGeneratorAgent
@@ -31,8 +36,10 @@ from .tools.llm_loader import load_llm
 from .nlp_pipeline import clean_text
 from .generators.report_generator import render_html_report
 
-# LangChain / Vector
-from langchain.vectorstores import Chroma
+# -----------------------------
+# ✅ UPDATED LangChain imports
+# -----------------------------
+from langchain_chroma import Chroma
 from langchain.embeddings import HuggingFaceEmbeddings
 
 load_dotenv()
@@ -74,7 +81,7 @@ class AgenticReportPipeline:
         self.report_generator = ReportGeneratorAgent()
 
         # -----------------------------
-        # Vector Store (READ ONLY)
+        # Vector Store (READ ONLY – global)
         # -----------------------------
         self.embedding = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-mpnet-base-v2"
@@ -145,6 +152,8 @@ class AgenticReportPipeline:
         # Fetch OCR text
         # -----------------------------
         current_text = new_file_text or ""
+        record = None
+
         if not current_text:
             record = self.collection.find_one(
                 {"userId": self._get_user_query(user_id)},
@@ -155,6 +164,9 @@ class AgenticReportPipeline:
         if not current_text:
             return {"success": False, "error": "No OCR text found"}
 
+        # ✅ Canonical NotebookLM document id
+        doc_id = str(record["_id"]) if record else str(user_id)
+
         # -----------------------------
         # Grounded Context
         # -----------------------------
@@ -164,10 +176,19 @@ class AgenticReportPipeline:
         )
 
         # ==============================================================
-        # 🔥 NOTEBOOKLM MODE (NEW)
+        # 🔥 NOTEBOOKLM MODE
         # ==============================================================
         if notebooklm_mode:
-            # Step 1: Summary (used as control signal)
+            from src.vector_store import VectorStoreManager
+
+            vector_manager = VectorStoreManager(doc_id)
+            vectordb = vector_manager.load_vector_store()
+            # vectordb.persist()
+
+            if vectordb is None:
+                vector_manager.create_vector_store(cleaned_text)
+
+            # Step 1: Summary
             summary_output = self.summarizer.run(cleaned_text)
 
             summary_payload = {
@@ -176,15 +197,15 @@ class AgenticReportPipeline:
                 "important_entities": [],
             }
 
-            # Step 2: Report Schema Selection
+            # Step 2: Schema selection
             report_schema = self.report_selector.run(
                 summary=summary_payload,
                 preferred_type=report_type
             )
 
-            # Step 3: Report Generation (RAG-based)
+            # Step 3: Section-wise RAG generation
             report_result = self.report_generator.run(
-                doc_id=str(user_id),
+                doc_id=doc_id,
                 report_schema=report_schema,
                 output_dir=self.reports_dir
             )

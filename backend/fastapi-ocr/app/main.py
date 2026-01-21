@@ -8,13 +8,15 @@ import time
 import threading
 import queue
 from typing import Optional, Dict
+import asyncio
 
 import requests
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
+from datetime import datetime
 
 # ------------------------------------------------------------
 # PATH SETUP
@@ -24,14 +26,9 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 # ------------------------------------------------------------
-# IMPORTS
+# IMPORTS (EXISTING)
 # ------------------------------------------------------------
 try:
-    # import config
-    # from src import transcript_fetcher, vector_store, rag_chain, utils
-    # from .ocr_utils import extract_text_from_file, collection as mongo_ocr_col
-    # from .agent_orchestrator import AgenticReportPipeline
-    # from .nlp_pipeline import perform_ner
     import config
     from src import transcript_fetcher
     from src import vector_store
@@ -43,6 +40,17 @@ try:
     from .nlp_pipeline import perform_ner
 except ImportError as e:
     print(f"❌ Startup Import Error: {e}")
+
+# ------------------------------------------------------------
+# NEW IMPORTS (FOLDER AI)
+# ------------------------------------------------------------
+from app.folder_analyzer.folder_pipeline import run_folder_analysis
+from app.folder_analyzer.metadata_store import (
+    create_analysis_job,
+    update_analysis_status,
+    get_analysis_job
+)
+from .folder_analyzer.insight_engine import ask_folder_ai
 
 # ------------------------------------------------------------
 # STREAM QUEUE (GLOBAL)
@@ -91,7 +99,7 @@ def stream(event: str, data):
     STREAM_QUEUE.put({"event": event, "data": data})
 
 # ============================================================
-# MODELS
+# MODELS (EXISTING)
 # ============================================================
 class ChatRequest(BaseModel):
     user_id: str
@@ -114,7 +122,19 @@ class ReportRequest(BaseModel):
     filename: Optional[str] = None
 
 # ============================================================
-# CHAT WORKER (UNCHANGED LOGIC)
+# NEW MODELS (FOLDER AI)
+# ============================================================
+
+class FolderAnalyzeRequest(BaseModel):
+    folder_path: str
+    user_id: str
+
+# class FolderQuestionRequest(BaseModel):
+#     analysis_id: str
+#     question: str
+
+# ============================================================
+# CHAT WORKER (UNCHANGED)
 # ============================================================
 def chat_worker(payload: ChatRequest) -> dict:
     if not payload.query:
@@ -147,7 +167,7 @@ def chat_worker(payload: ChatRequest) -> dict:
     }
 
 # ============================================================
-# NOTEBOOKLM REPORT STREAM WORKER
+# NOTEBOOKLM REPORT STREAM WORKER (UNCHANGED)
 # ============================================================
 def report_stream_worker(req: ReportRequest):
     try:
@@ -178,7 +198,39 @@ def report_stream_worker(req: ReportRequest):
         stream("done", True)
 
 # ============================================================
-# ENDPOINTS
+# FOLDER AI BACKGROUND WORKER
+# ============================================================
+async def process_folder_analysis(analysis_id: str, folder_path: str):
+    try:
+        update_analysis_status(
+            analysis_id,
+            status="RUNNING",
+            step="Analyzing folder"
+        )
+
+        result = await asyncio.to_thread(
+            run_folder_analysis,
+            folder_path
+        )
+
+        update_analysis_status(
+            analysis_id,
+            status="COMPLETED",
+            step="Graphs & charts generated",
+            result=result
+        )
+
+    except Exception as e:
+        update_analysis_status(
+            analysis_id,
+            status="FAILED",
+            error=str(e)
+        )
+
+
+
+# ============================================================
+# EXISTING ENDPOINTS (UNCHANGED)
 # ============================================================
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(payload: ChatRequest):
@@ -222,6 +274,91 @@ async def ocr_endpoint(file: UploadFile = File(...)):
     text = extract_text_from_file(file_body, file.filename)
     return {"success": True, "filename": file.filename, "text": text}
 
+# ============================================================
+# NEW FOLDER AI ENDPOINTS
+# ============================================================
+
+@app.post("/folder/analyze")
+async def analyze_folder(
+    req: FolderAnalyzeRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Starts folder analysis asynchronously.
+    """
+    analysis_id = create_analysis_job(
+        folder_id=req.folder_path,
+        user_id=req.user_id
+    )
+
+    background_tasks.add_task(
+        process_folder_analysis,
+        analysis_id,
+        req.folder_path
+    )
+
+    return {
+        "analysis_id": analysis_id,
+        "status": "PENDING",
+        "message": "Folder analysis started"
+    }
+
+
+async def process_folder_analysis(analysis_id: str, folder_path: str):
+    try:
+        update_analysis_status(
+            analysis_id,
+            status="RUNNING",
+            step="Analyzing folder"
+        )
+
+        result = await asyncio.to_thread(
+            run_folder_analysis,
+            folder_path
+        )
+
+        update_analysis_status(
+            analysis_id,
+            status="COMPLETED",
+            step="Graphs & charts generated",
+            result=result
+        )
+
+    except Exception as e:
+        update_analysis_status(
+            analysis_id,
+            status="FAILED",
+            error=str(e)
+        )
+
+
+
+@app.get("/folder/status/{analysis_id}")
+async def get_folder_status(analysis_id: str):
+    job = get_analysis_job(analysis_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job["_id"] = str(job["_id"])
+    return job
+
+@app.post("/folder/ask")
+def ask_folder(req: FolderAnalyzeRequest):
+
+    job = get_analysis_job(req.analysis_id)
+
+    if not job or job["status"] != "COMPLETED":
+        raise HTTPException(status_code=400, detail="Folder analysis not completed")
+
+    context = job["result"]
+
+    answer = ask_folder_ai(context, req.question)
+
+    return {
+        "question": req.question,
+        "answer": answer
+    }
 
 
 # (OCR and agentic-report endpoints remain as they were)

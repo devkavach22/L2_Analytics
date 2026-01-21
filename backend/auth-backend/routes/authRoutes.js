@@ -12,10 +12,9 @@ import OcrRecord from "../models/OcrRecords.js";
 import { analyzeReport } from "../controllers/reportController.js";
 import axios from "axios";
 import Link from "../models/Link.js";
-import { v4 as uuidv4 } from 'uuid';
-
+import pkg from 'uuid';
 import { message } from "antd";
-// const { v4: uuidv4 } = pkg;
+const { v4: uuidv4 } = pkg;
 // import { viewFile } from "../controllers/authController.js";
 
 const router = express.Router();
@@ -287,6 +286,7 @@ router.post("/folder/analyze/:folderId", auth, async (req, res) => {
             {
                 user_id: userId,
                 folder_id: folderId,
+                folder_path: absoluteFolderPath, // ✅ REQUIRED
                 analyze_text: true,
                 generate_charts: true
             },
@@ -302,6 +302,47 @@ router.post("/folder/analyze/:folderId", auth, async (req, res) => {
 
     } catch (error) {
         console.error("❌ Folder Analyzer Error:", error.response?.data || error.message);
+
+        return res.status(500).json({
+            success: false,
+            message: error.response?.data || error.message
+        });
+    }
+});
+
+router.get("/folder/status/:analysisId", auth, async (req, res) => {
+    try {
+        const { analysisId } = req.params;
+        const userId = req.user.id.toString();
+
+        if (!analysisId) {
+            return res.status(400).json({
+                success: false,
+                message: "analysisId is required"
+            });
+        }
+
+        const pythonApiUrl = process.env.PYTHON_API_URL;
+        if (!pythonApiUrl) {
+            throw new Error("PYTHON_API_URL not configured");
+        }
+
+        console.log("📡 Fetching folder analysis status:", analysisId);
+
+        const pythonResponse = await axios.get(
+            `${pythonApiUrl}/folder/status/${analysisId}`,
+            {
+                params: { user_id: userId } // security layer
+            }
+        );
+
+        return res.status(200).json({
+            success: true,
+            data: pythonResponse.data
+        });
+
+    } catch (error) {
+        console.error("❌ Folder Status Error:", error.response?.data || error.message);
 
         return res.status(500).json({
             success: false,
