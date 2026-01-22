@@ -45,12 +45,12 @@ except ImportError as e:
 # NEW IMPORTS (FOLDER AI)
 # ------------------------------------------------------------
 from app.folder_analyzer.folder_pipeline import run_folder_analysis
-from app.folder_analyzer.metadata_store import (
-    create_analysis_job,
-    update_analysis_status,
-    get_analysis_job
-)
-from .folder_analyzer.insight_engine import ask_folder_ai
+# from app.folder_analyzer.metadata_store import (
+#     create_analysis_job,
+#     update_analysis_status,
+#     get_analysis_job
+# )
+# from .folder_analyzer.insight_engine import ask_folder_ai
 
 # ------------------------------------------------------------
 # STREAM QUEUE (GLOBAL)
@@ -126,8 +126,9 @@ class ReportRequest(BaseModel):
 # ============================================================
 
 class FolderAnalyzeRequest(BaseModel):
-    folder_path: str
+    folder_id: str
     user_id: str
+    folder_path: str
 
 # class FolderQuestionRequest(BaseModel):
 #     analysis_id: str
@@ -197,36 +198,85 @@ def report_stream_worker(req: ReportRequest):
     finally:
         stream("done", True)
 
-# ============================================================
-# FOLDER AI BACKGROUND WORKER
-# ============================================================
-async def process_folder_analysis(analysis_id: str, folder_path: str):
-    try:
-        update_analysis_status(
-            analysis_id,
-            status="RUNNING",
-            step="Analyzing folder"
-        )
+# async def process_folder_analysis(analysis_id: str, folder_path: str):
+#     """
+#     Background async worker for folder AI analysis.
+#     Runs blocking logic in thread pool safely.
+#     """
 
+#     try:
+#         # --------------------------------------------------
+#         # STEP 1: START
+#         # --------------------------------------------------
+#         update_analysis_status(
+#             analysis_id=analysis_id,
+#             status="RUNNING",
+#             step="Initializing analysis",
+#             progress=5
+#         )
+
+#         # --------------------------------------------------
+#         # STEP 2: RUN HEAVY ANALYSIS (THREAD)
+#         # --------------------------------------------------
+#         update_analysis_status(
+#             analysis_id=analysis_id,
+#             step="Indexing files, OCR & embeddings",
+#             progress=30
+#         )
+
+#         result = await asyncio.to_thread(
+#             run_folder_analysis,
+#             folder_path
+#         )
+
+#         # --------------------------------------------------
+#         # STEP 3: FINALIZE
+#         # --------------------------------------------------
+#         update_analysis_status(
+#             analysis_id=analysis_id,
+#             status="COMPLETED",
+#             step="Analysis completed successfully",
+#             progress=100,
+#             result=result
+#         )
+
+#     except Exception as e:
+#         # --------------------------------------------------
+#         # FAILURE HANDLING
+#         # --------------------------------------------------
+#         error_trace = traceback.format_exc()
+
+#         update_analysis_status(
+#             analysis_id=analysis_id,
+#             status="FAILED",
+#             step="Analysis failed",
+#             error=f"{str(e)}\n{error_trace}"
+#         )
+# import os
+async def process_folder_analysis(
+    folder_id: str,
+    user_id: str,
+    folder_path: str
+):
+    try:
+        # 🔍 Safety check
+        if not folder_path or not os.path.exists(folder_path):
+            raise RuntimeError(f"Folder path does not exist: {folder_path}")
+
+        # 🚀 Run CPU-heavy analysis in thread
         result = await asyncio.to_thread(
             run_folder_analysis,
-            folder_path
+            folder_id,
+            user_id,
+            folder_path   
         )
 
-        update_analysis_status(
-            analysis_id,
-            status="COMPLETED",
-            step="Graphs & charts generated",
-            result=result
-        )
+        return result
 
     except Exception as e:
-        update_analysis_status(
-            analysis_id,
-            status="FAILED",
-            error=str(e)
-        )
-
+        import traceback
+        traceback.print_exc()
+        raise 
 
 
 # ============================================================
@@ -279,69 +329,59 @@ async def ocr_endpoint(file: UploadFile = File(...)):
 # ============================================================
 
 @app.post("/folder/analyze")
-async def analyze_folder(
-    req: FolderAnalyzeRequest,
-    background_tasks: BackgroundTasks
-):
-    """
-    Starts folder analysis asynchronously.
-    """
-    analysis_id = create_analysis_job(
-        folder_id=req.folder_path,
-        user_id=req.user_id
-    )
+async def analyze_folder(req: FolderAnalyzeRequest):
+    # -----------------------------
+    # BASIC VALIDATION (REQUIRED)
+    # -----------------------------
+    if not req.folder_id:
+        raise HTTPException(status_code=400, detail="folder_id is required")
 
-    background_tasks.add_task(
-        process_folder_analysis,
-        analysis_id,
-        req.folder_path
+    if not req.user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    if not req.folder_path:
+        raise HTTPException(status_code=400, detail="folder_path is required")
+
+    if not os.path.exists(req.folder_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Folder path does not exist: {req.folder_path}"
+        )
+
+    # -----------------------------
+    # RUN ANALYSIS (ASYNC SAFE)
+    # -----------------------------
+    result = await process_folder_analysis(
+        folder_id=req.folder_id,
+        user_id=req.user_id,
+        folder_path=req.folder_path
     )
 
     return {
-        "analysis_id": analysis_id,
-        "status": "PENDING",
-        "message": "Folder analysis started"
+        "status": "COMPLETED",
+        "folder_id": req.folder_id,
+        "total_files": result.get("total_files", 0),
+        "result": result
     }
+    
+# @app.get("/folder/status/{analysis_id}")
+# async def get_folder_status(analysis_id: str):
+#     job = get_analysis_job(analysis_id)
+
+#     if not job:
+#         raise HTTPException(status_code=404, detail="Job not found")
+
+#     job["_id"] = str(job["_id"])
+
+#     # ------------------------------------
+#     # PROTECT LARGE PAYLOADS
+#     # ------------------------------------
+#     if job.get("status") != "COMPLETED":
+#         job.pop("result", None)
+
+#     return job
 
 
-async def process_folder_analysis(analysis_id: str, folder_path: str):
-    try:
-        update_analysis_status(
-            analysis_id,
-            status="RUNNING",
-            step="Analyzing folder"
-        )
-
-        result = await asyncio.to_thread(
-            run_folder_analysis,
-            folder_path
-        )
-
-        update_analysis_status(
-            analysis_id,
-            status="COMPLETED",
-            step="Graphs & charts generated",
-            result=result
-        )
-
-    except Exception as e:
-        update_analysis_status(
-            analysis_id,
-            status="FAILED",
-            error=str(e)
-        )
-
-
-
-@app.get("/folder/status/{analysis_id}")
-async def get_folder_status(analysis_id: str):
-    job = get_analysis_job(analysis_id)
-
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    job["_id"] = str(job["_id"])
-    return job
 
 @app.post("/folder/ask")
 def ask_folder(req: FolderAnalyzeRequest):

@@ -1,3 +1,5 @@
+import os
+
 class FolderGraph:
     """
     Generic graph structure for:
@@ -19,14 +21,14 @@ class FolderGraph:
                 "label": folder_path.split("/")[-1] or folder_path
             }
 
-    def add_file(self, file_path: str, extension: str = ""):
-        if file_path not in self.nodes:
-            self.nodes[file_path] = {
-                "id": file_path,
-                "type": "file",
-                "label": file_path.split("/")[-1],
-                "extension": extension
-            }
+    def add_file(self, file_path, extension, metadata=None):
+        self.nodes[file_path] = {
+            "id": file_path,
+            "type": "file",
+            "label": os.path.basename(file_path),
+            "extension": extension,
+            "metadata": metadata or {}
+        }
 
     # ---------------- EDGE HELPERS ----------------
 

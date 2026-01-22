@@ -1,8 +1,28 @@
 from collections import Counter, defaultdict
 from datetime import datetime
+import spacy
 
+nlp = spacy.load("en_core_web_sm")
 
-# ---------------- BASIC STRUCTURE ----------------
+def analyze_entities(files):
+    entities = Counter()
+
+    for f in files:
+        if f.get("ocr_entities"):
+            entities.update(f["ocr_entities"])
+            continue
+
+        # Fallback: extract from text
+        text = f.get("ocr_text", "")
+        if not text:
+            continue
+
+        candidates = re.findall(r"\b[A-Z][a-z]{2,}\b", text)
+        entities.update(candidates)
+
+    return dict(entities)
+
+# # ---------------- BASIC STRUCTURE ----------------
 
 def analyze_structure(files):
     ext_counter = Counter(f.get("extension", "unknown") for f in files)
@@ -46,7 +66,7 @@ def analyze_timeline(files):
     }
 
 
-# ---------------- FOLDER HEALTH INTELLIGENCE ----------------
+# # ---------------- FOLDER HEALTH INTELLIGENCE ----------------
 
 def analyze_folder_health(files):
     safe_files = [
@@ -97,3 +117,12 @@ def analyze_content_profile(files):
             categories["other"] += 1
 
     return dict(categories)
+
+# def analyze_entities(files):
+#     entities = Counter()
+
+#     for f in files:
+#         for e in f.get("ocr_entities", []):
+#             entities[e] += 1
+
+#     return dict(entities)
