@@ -5,11 +5,13 @@ class FolderGraph:
     Generic graph structure for:
     - Folder tree
     - Semantic similarity graph
+    - Folder-level analytics & summaries
     """
 
     def __init__(self):
-        self.nodes = {}   # node_id -> {type, label, extra}
-        self.edges = []   # {source, target, type, weight}
+        self.nodes = {}     # node_id -> node dict
+        self.edges = []     # list of edges
+        self.metadata = {}  # global metadata (folder summary, insights)
 
     # ---------------- NODE HELPERS ----------------
 
@@ -18,10 +20,11 @@ class FolderGraph:
             self.nodes[folder_path] = {
                 "id": folder_path,
                 "type": "folder",
-                "label": folder_path.split("/")[-1] or folder_path
+                "label": os.path.basename(folder_path) or folder_path,
+                "metadata": {}
             }
 
-    def add_file(self, file_path, extension, metadata=None):
+    def add_file(self, file_path: str, extension: str, metadata=None):
         self.nodes[file_path] = {
             "id": file_path,
             "type": "file",
@@ -29,6 +32,29 @@ class FolderGraph:
             "extension": extension,
             "metadata": metadata or {}
         }
+
+    # ---------------- METADATA HELPERS ----------------
+
+    def add_folder_metadata(self, folder_path: str, metadata: dict):
+        """
+        Attach aggregated metadata to a folder node.
+        SAFE: auto-creates folder if missing.
+        """
+        # if folder_path not in self.nodes:
+        #     self.add_folder(folder_path)
+        if folder_path in self.nodes:
+            self.nodes[folder_path].setdefault("metadata", {})
+            self.nodes[folder_path]["metadata"].update(metadata)
+
+    # def set_global_metadata(self, metadata: dict):
+    #     """
+    #     Attach global-level metadata:
+    #     - auto_summary
+    #     - insights
+    #     - risks
+    #     - themes
+    #     """
+    #     self.metadata.update(metadata)
 
     # ---------------- EDGE HELPERS ----------------
 
@@ -44,16 +70,17 @@ class FolderGraph:
             "source": source,
             "target": target,
             "type": "semantic_similarity",
-            "weight": round(score, 4)
+            "weight": round(float(score), 4)
         })
 
     # ---------------- EXPORT ----------------
 
     def export(self):
         """
-        Export graph in frontend-friendly format
+        Frontend-friendly export format
         """
         return {
             "nodes": list(self.nodes.values()),
             "edges": self.edges
+            # "metadata": self.metadata
         }

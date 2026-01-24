@@ -1,19 +1,59 @@
-from app.folder_analyzer.graph_builder import FolderGraph
-from app.folder_analyzer.content_indexer import find_similar_files
+from typing import Dict, List
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 
-def build_semantic_graph(files, max_files=15):
-    graph = FolderGraph()
-    files = files[:max_files]
+SIMILARITY_THRESHOLD = 0.65
 
-    for f in files:
-        graph.add_file(f["file_path"], f.get("extension", ""))
 
-    for f in files:
-        # source = f["file_path"]
-        matches = find_similar_files(f["file_path"], top_k=3)
+def build_semantic_graph(files: List[Dict]) -> Dict:
+    """
+    Builds a weighted semantic graph between files.
+    Safe, explainable, UI-ready.
+    """
 
-        for m in matches:
-            graph.link_similar(f["file_path"], m["id"], m["score"])
+    nodes = []
+    edges = []
 
-    return graph.export()
+    valid_files = [
+        f for f in files
+        if isinstance(f.get("embedding"), list)
+        and all(isinstance(x, (int, float)) for x in f["embedding"])
+    ]
+
+    if len(valid_files) < 2:
+        return {"nodes": [], "edges": []}
+
+    embeddings = np.array([f["embedding"] for f in valid_files])
+    if not embeddings.size:
+        return {"nodes": [], "edges": []}
+
+    similarity_matrix = cosine_similarity(embeddings)
+
+    # ---------- Nodes ----------
+    for idx, f in enumerate(valid_files):
+        nodes.append({
+            "id": f["file_id"],
+            "label": f.get("file_name", "unknown"),
+            "entity_count": len(f.get("nlp_entities", [])),
+            "keyword_count": len(f.get("nlp_keywords", [])),
+            "content_length": len(f.get("ocr_text", "")),
+        })
+
+    # ---------- Edges ----------
+    for i in range(len(valid_files)):
+        for j in range(i + 1, len(valid_files)):
+            score = similarity_matrix[i][j]
+
+            if score >= SIMILARITY_THRESHOLD:
+                edges.append({
+                    "source": valid_files[i]["file_id"],
+                    "target": valid_files[j]["file_id"],
+                    "weight": round(float(score), 3),
+                    "relationship": "semantic_similarity"
+                })
+
+    return {
+        "nodes": nodes,
+        "edges": edges
+    }

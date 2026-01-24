@@ -15,19 +15,21 @@ def extract_entities_and_keywords(text: str):
     doc = nlp(text)
 
     entities = [
-        {"text": ent.text, "label": ent.label_}
+        ent.text.strip()
         for ent in doc.ents
+        if ent.text.strip()
     ]
 
     keywords = [
         token.lemma_.lower()
         for token in doc
-        if token.is_alpha and token.text.lower() not in STOPWORDS
+        if token.is_alpha
+        and token.text.lower() not in STOPWORDS
+        and len(token.text) > 2
     ]
 
-    keyword_freq = Counter(keywords).most_common(10)
-
     return {
-        "entities": entities,
-        "keywords": keyword_freq
+        "entities": entities,                 # flat list
+        "keywords": Counter(keywords).most_common(10)
     }
+

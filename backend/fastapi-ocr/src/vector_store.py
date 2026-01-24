@@ -56,7 +56,7 @@ class VectorStoreManager:
 
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
-            chunk_overlap=100
+            chunk_overlap=150
         )
 
         self.client = chromadb.PersistentClient(

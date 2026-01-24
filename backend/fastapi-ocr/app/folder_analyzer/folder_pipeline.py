@@ -1,173 +1,215 @@
 import os
-from typing import Dict
-from app.folder_analyzer.metadata_store import (
-    load_files_by_folder,
-    load_ocr_records,
-    upsert_ocr_record
-)
+from typing import Dict, List
+
+from app.folder_analyzer.metadata_store import load_files_with_ocr, upsert_ocr_record
 from app.folder_analyzer.tree_graph import build_folder_tree
 from app.folder_analyzer.semantic_graph import build_semantic_graph
-from app.folder_analyzer.analysis_engine import *
+from app.folder_analyzer.file_scoring import score_files
+from app.folder_analyzer.charts_builder import build_charts
+
+from app.folder_analyzer.analysis_engine import (
+    analyze_structure,
+    analyze_timeline,
+    analyze_folder_health,
+    analyze_content_profile
+)
+
 from app.folder_analyzer.trend_analyzer import analyze_trends
 from app.folder_analyzer.entity_aggregator import aggregate_entities_and_keywords
-from app.folder_analyzer.nlp_engine import extract_entities_and_keywords, clean_text
-# from app.folder_analyzer.analysis_engine import (
-#     analyze_structure,
-#     analyze_timeline,
-#     analyze_folder_health,
-#     analyze_content_profile
-# )
-# from app.generators.chart_generator import generate_chart
-from app.folder_analyzer.content_indexer import index_file_content
+from app.folder_analyzer.embedding_engine import embed_text
+from app.folder_analyzer.content_indexer import index_folder_to_vector_store
+from app.folder_analyzer.nlp_engine import extract_entities_and_keywords
 from app.agents.folder_analysis_llm import FolderAnalysisAgent
 from app.ocr_utils import extract_text_from_file
 
+def normalize_terms(items, limit=5):
+    """
+    Normalize entities / keywords into safe string lists.
+    Handles: str, tuple, list, dict.
+    """
+    results = []
+
+    for item in items[:limit]:
+        if isinstance(item, str):
+            results.append(item)
+        elif isinstance(item, dict):
+            results.append(
+                item.get("text")
+                or item.get("label")
+                or item.get("name")
+                or str(item)
+            )
+        elif isinstance(item, (list, tuple)):
+            if len(item) > 0:
+                results.append(str(item[0]))
+        else:
+            results.append(str(item))
+
+    return results
+
+
+def build_folder_context(files: List[Dict]) -> str:
+    sections = []
+
+    for f in files:
+        text = f.get("ocr_text", "").strip()
+        if not text:
+            continue
+
+        sections.append(
+            f"FILE: {f.get('file_name')}\n"
+            f"SIZE_KB: {f.get('size_kb')}\n"
+            f"CONTENT:\n{text[:4000]}"
+        )
+
+    return "\n\n---\n\n".join(sections)
+
 
 def run_folder_analysis(folder_id: str, user_id: str, folder_path: str) -> Dict:
-
-    # STEP 1: Load files
-    files = load_files_by_folder(folder_id, user_id)
+    files: List[Dict] = load_files_with_ocr(folder_id, user_id)
 
     if not files:
-        return { "total_files": 0, "error": "No files found"}
+        return {"total_files": 0, "error": "No files found"}
 
-    # STEP 2: Load OCR cache
-    ocr_map = load_ocr_records(folder_id, user_id)
-
+    # -------------------------------------------------
+    # OCR FALLBACK + CLEANING
+    # -------------------------------------------------
     for f in files:
-        file_path = os.path.normpath(f["file_path"])
-        file_name = f.get("file_name") or os.path.basename(file_path)
+        file_path = f.get("file_path")
+        file_name = f.get("file_name") or "unknown"
 
-        ocr = ocr_map.get(file_path, {})
-
-        if ocr:
-            f.update(ocr)
-        else:
+        if not f.get("ocr_text") and file_path and os.path.exists(file_path):
             try:
-                with open(path, "rb") as file:
-                    text = extract_text_from_file(file.read(), name)
+                with open(file_path, "rb") as fp:
+                    text = extract_text_from_file(fp.read(), file_name)
 
-                if text.strip():
-                    upsert_ocr_record(
-                        file_path=path,
-                        file_name=name,
-                        folder_id=folder_id,
-                        user_id=user_id,
-                        extracted_text=text,
-                        confidence=1.0
-                    )
-                    f["ocr_text"] = text
-                else:
-                    f["ocr_text"] = ""
-            except:
+                f["ocr_text"] = text.strip()
+
+                upsert_ocr_record(
+                    file_id=f["file_id"],
+                    file_name=file_name,
+                    folder_id=folder_id,
+                    user_id=user_id,
+                    extracted_text=f["ocr_text"],
+                    confidence=1.0,
+                    entities=[]
+                )
+            except Exception:
                 f["ocr_text"] = ""
 
-        index_file_content(f)
+    # -------------------------------------------------
+    # VECTOR STORE INDEXING
+    # -------------------------------------------------
+    index_folder_to_vector_store(folder_id, user_id, context="")
 
-        # f["ocr_text"] = ocr.get("ocr_text", "")
-        # f["ocr_entities"] = ocr.get("ocr_entities", [])
-        # f["ocr_confidence"] = ocr.get("ocr_confidence", 0)
-
-        # 🔥 HARD FIX: OCR fallback + persistence
-        # if not f["ocr_text"].strip():
-        #     try:
-        #         with open(file_path, "rb") as file:
-        #             extracted_text = extract_text_from_file(
-        #                 file.read(),
-        #                 file_name
-        #             )
-
-        #         if extracted_text.strip():
-        #             f["ocr_text"] = extracted_text
-
-        #             # Persist OCR so it never runs again
-        #             upsert_ocr_record(
-        #                 file_path=file_path,
-        #                 file_name=file_name,
-        #                 folder_id=folder_id,
-        #                 user_id=user_id,
-        #                 extracted_text=extracted_text,
-        #                 confidence=1.0,
-        #                 entities=[]
-        #             )
-        #         else:
-        #             f["ocr_text"] = ""
-
-        #     except Exception as e:
-        #         print(f"❌ OCR failed for {file_name}: {e}")
-        #         f["ocr_text"] = ""
-
-    # STEP 3: NLP
+    # -------------------------------------------------
+    # EMBEDDINGS + NLP
+    # -------------------------------------------------
     for f in files:
-        text = f.get("ocr_text", "")
-        if text.strip():
-            nlp = extract_entities_and_keywords(clean_text(text))
-            f["nlp_entities"] = nlp["entities"]
-            f["nlp_keywords"] = nlp["keywords"]
+        text = f.get("ocr_text", "").strip()
+
+        f["embedding"] = embed_text(text) if len(text) > 20 else None
+
+        if text:
+            nlp = extract_entities_and_keywords(text)
+            f["nlp_entities"] = nlp.get("entities", [])
+            f["nlp_keywords"] = nlp.get("keywords", [])
         else:
             f["nlp_entities"] = []
             f["nlp_keywords"] = []
-        # if not text.strip():
-        #     f["nlp_entities"] = []
-        #     f["nlp_keywords"] = []
-        #     continue
 
-        # result = extract_entities_and_keywords(clean_text(text))
-        # f["nlp_entities"] = result["entities"]
-        # f["nlp_keywords"] = result["keywords"]
-
-    # STEP 4: Analysis
+    # -------------------------------------------------
+    # ANALYSIS
+    # -------------------------------------------------
     structure = analyze_structure(files)
     timeline = analyze_timeline(files)
     health = analyze_folder_health(files)
     content_profile = analyze_content_profile(files)
 
-    # STEP 5: Aggregation
-    summary = aggregate_entities_and_keywords(files)
+    aggregation = aggregate_entities_and_keywords(files)
     trends = analyze_trends(files)
 
-    # STEP 6: Graphs
     folder_tree = build_folder_tree(files)
     semantic_graph = build_semantic_graph(files)
+    file_scores = score_files(files, semantic_graph)
+    charts = build_charts(files)
 
-    # ---- GROUNDED LLM ----
-    evidence = "\n".join(
-        f["ocr_text"][:2000]
-        for f in files if f.get("ocr_text")
+    # -------------------------------------------------
+    # GROUNDED LLM CONTEXT (FIXED & SAFE)
+    # -------------------------------------------------
+    context_blocks = []
+
+    for f in files:
+        entities = normalize_terms(f.get("nlp_entities", []))
+        keywords = normalize_terms(f.get("nlp_keywords", []))
+
+        block = [
+            f"File name: {f.get('file_name', 'unknown')}",
+            f"File path: {f.get('file_path', 'unknown')}",
+            f"Size (KB): {f.get('size_kb', 0)}",
+            f"Top entities: {', '.join(entities) if entities else 'None'}",
+            f"Top keywords: {', '.join(keywords) if keywords else 'None'}",
+        ]
+
+        text = f.get("ocr_text", "")
+        if text:
+            block.append(f"Content excerpt:\n{text[:800]}")
+
+        context_blocks.append("\n".join(block))
+
+    grounded_context = "\n\n---\n\n".join(context_blocks)
+
+    # -------------------------------------------------
+    # GROUNDED AUTO-SUMMARY (LLM ONLY USES FILE DATA)
+    # -------------------------------------------------
+    llm = FolderAnalysisAgent()
+
+    auto_summary = llm.analyze(
+        folder_id=folder_id,
+        question=(
+            "Using ONLY the information provided below, write a concise executive "
+            "summary of the folder. Mention document types, dominant themes, "
+            "and any notable patterns.\n\n"
+            f"{grounded_context}"
+        )
     )
 
-    # STEP 7: LLM
-    llm = FolderAnalysisAgent(context=evidence)
     llm_insights = {
-        "summary": llm.analyze("Provide a high-level summary of this folder"),
-        "risks": llm.analyze("Identify risks or sensitive content"),
-        "themes": llm.analyze("Identify dominant themes")
+        "summary": auto_summary,
+        "risks": llm.analyze(
+            folder_id=folder_id,
+            question=(
+                "Based strictly on the documents below, identify any legal, "
+                "financial, or compliance risks.\n\n"
+                f"{grounded_context}"
+            )
+        ),
+        "themes": llm.analyze(
+            folder_id=folder_id,
+            question=(
+                "From the documents below, identify dominant themes and "
+                "document categories.\n\n"
+                f"{grounded_context}"
+            )
+        )
     }
 
-    # # STEP 8: Charts
-    # charts = {
-    #     "file_types": generate_chart(structure["file_types"]),
-    #     "content_profile": generate_chart(content_profile),
-    #     "monthly_activity": generate_chart(timeline["monthly_activity"]),
-    #     "entity_distribution": generate_chart(summary["entities"])
-    # }
-
     return {
+        "auto_summary": auto_summary,
         "structure": structure,
         "timeline": timeline,
         "health": health,
         "content_profile": content_profile,
-        "entities": summary["entities"],
-        "keywords": summary["keywords"],
+        "entities": aggregation["entities"],
+        "keywords": aggregation["keywords"],
         "trends": trends,
         "folder_tree": folder_tree,
         "semantic_graph": semantic_graph,
-        # "charts": charts,
+        "file_scores": file_scores,
+        "charts": charts,
         "llm_insights": llm_insights,
         "total_files": len(files)
     }
-
-
 
 # import os
 # import asyncio
