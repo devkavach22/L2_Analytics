@@ -23,119 +23,146 @@ class FolderAnalysisAgent:
         self.client = MongoClient(mongo_url)
         self.db = self.client[db_name]
 
-        self.prompt = ChatPromptTemplate.from_messages([
+        # 🔥 PROFESSIONAL ANALYST PROMPT
+        self.structured_prompt = ChatPromptTemplate.from_messages([
             ("system",
-             "You are an enterprise document analysis assistant.\n"
-             "Answer strictly from OCR text.\n"
-             "If insufficient info, say: 'Insufficient evidence in the documents.'"),
-            ("human", "OCR Content:\n{context}\n\nTask:\n{question}")
+             "You are a professional intelligence analyst.\n"
+             "Write a structured analytical brief.\n"
+             "Do NOT mention OCR, documents, or sources.\n"
+             "Do NOT use phrases like 'Based on' or 'According to'."),
+            ("human",
+             "Information:\n{context}\n\n"
+             "Prepare structured sections:\n"
+             "1. Document Types Represented\n"
+             "2. Key Individuals and Entities\n"
+             "3. Chronological Highlights\n"
+             "4. Financial Indicators\n"
+             "5. Legal or Criminal Matters\n"
+             "6. Patterns and Observations\n"
+             "7. Information Gaps")
         ])
 
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        self.doc_prompt = ChatPromptTemplate.from_messages([
+            ("system", "Provide a short factual summary."),
+            ("human", "{context}")
+        ])
+
+        self.doc_chain = self.doc_prompt | self.llm | StrOutputParser()
+        self.structured_chain = self.structured_prompt | self.llm | StrOutputParser()
 
     # --------------------------------------------------
-    def _clean_ocr_text(self, text: str) -> str:
-        lines = text.splitlines()
-        cleaned = []
-        for l in lines:
-            l = l.strip()
-            if not l:
-                continue
-            if l.lower().count("nan") > 2:
-                continue
-            if sum(c.isdigit() for c in l) > len(l) * 0.6:
-                continue
-            cleaned.append(l)
-        return "\n".join(cleaned)
+    def _clean_ocr_text(self, text):
+        return "\n".join(l.strip() for l in text.splitlines() if l.strip())
 
     # --------------------------------------------------
-    def _smart_sample(self, text: str, max_chars=1500):
-        if len(text) <= max_chars:
-            return text
-        part = max_chars // 3
-        return text[:part] + "\n...\n" + text[len(text)//2:len(text)//2+part] + "\n...\n" + text[-part:]
+    def _generate_folder_fingerprint(self, docs):
+        raw = "".join(str(doc["_id"]) + str(len(doc.get("extractedText", ""))) for doc in docs)
+        return hashlib.md5(raw.encode()).hexdigest()
 
     # --------------------------------------------------
-    def _generate_folder_fingerprint(self, ocr_docs):
-        """
-        Create a fingerprint of folder content
-        """
-        hash_input = ""
-        for doc in ocr_docs:
-            hash_input += str(doc["_id"])
-            hash_input += str(len(doc.get("extractedText", "")))
-
-        return hashlib.md5(hash_input.encode()).hexdigest()
+    # 🔥 ENTITY TYPE CLASSIFIER
+    def _classify_entity(self, e):
+        if re.search(r'\d{2}/\d{2}/\d{4}', e):
+            return "DATE"
+        if re.search(r'\b\d{10,}\b', e):
+            return "ACCOUNT"
+        if "FIR" in e or "IPC" in e:
+            return "LEGAL_CASE"
+        if any(k in e.lower() for k in ["police", "court", "branch"]):
+            return "ORG"
+        if any(k in e.lower() for k in ["jail", "prison", "district", "delhi"]):
+            return "LOCATION"
+        if e.istitle():
+            return "PERSON"
+        return "OTHER"
 
     # --------------------------------------------------
-    def analyze(self, folder_id: str):
+    def _extract_entities(self, text):
+        found = set()
+
+        found.update(re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)+\b', text))
+        found.update(re.findall(r'\bFIR\s*\d+/?\d*\b', text))
+        found.update(re.findall(r'\b\d{2}/\d{2}/\d{4}\b', text))
+        found.update(re.findall(r'\b\d{10,}\b', text))
+
+        entities = [{"name": e, "type": self._classify_entity(e)} for e in found]
+        return entities
+
+    # --------------------------------------------------
+    def _build_entity_graph(self, doc_entities):
+        nodes = {}
+        edges = []
+
+        for entities in doc_entities.values():
+            for e in entities:
+                nodes[e["name"]] = {"id": e["name"], "type": e["type"]}
+
+        # co-occurrence links
+        for entities in doc_entities.values():
+            names = [e["name"] for e in entities]
+            for i in range(len(names)):
+                for j in range(i+1, len(names)):
+                    edges.append({
+                        "source": names[i],
+                        "target": names[j],
+                        "relation": "co_occurrence"
+                    })
+
+        return {"nodes": list(nodes.values()), "edges": edges}
+
+    # --------------------------------------------------
+    def analyze(self, folder_id):
 
         folder_object_id = ObjectId(folder_id)
-
         ocr_docs = list(self.db.ocrrecords.find({"folderId": folder_object_id}))
 
         if not ocr_docs:
-            return "Insufficient evidence in the documents."
+            return {"summary": "Insufficient information available.", "entity_graph": {}}
 
-        # 🔥 STEP 1 — Check folder fingerprint
-        current_fingerprint = self._generate_folder_fingerprint(ocr_docs)
-
+        fingerprint = self._generate_folder_fingerprint(ocr_docs)
         folder_record = self.db.folderanalysis.find_one({"folderId": folder_object_id})
 
-        if folder_record and folder_record.get("fingerprint") == current_fingerprint:
-            logger.info("No folder changes detected — using cached summary.")
-            return folder_record["finalSummary"]
+        if folder_record and folder_record.get("fingerprint") == fingerprint:
+            logger.info("Using cached analysis")
+            return {
+                "summary": folder_record["finalSummary"],
+                "entity_graph": folder_record.get("entityGraph", {})
+            }
 
-        logger.info("Folder changed — running fresh analysis.")
+        logger.info("Running fresh analysis")
 
         doc_summaries = []
+        doc_entities = {}
 
-        # 🔥 STEP 2 — Document summaries (with per-doc cache)
+        # 🔥 ENTITY EXTRACTION RUNS FOR ALL DOCS
         for doc in ocr_docs:
-            if doc.get("docSummary"):
-                logger.info(f"Using cached doc summary for {doc['_id']}")
-                doc_summaries.append(doc["docSummary"])
-                continue
-
             text = self._clean_ocr_text(doc.get("extractedText", ""))
-            sampled = self._smart_sample(text)
 
-            logger.info(f"Generating summary for doc {doc['_id']}")
-
-            summary = self.chain.invoke({
-                "context": sampled,
-                "question": "Summarize this document factually."
-            })
-
-            self.db.ocrrecords.update_one(
-                {"_id": doc["_id"]},
-                {"$set": {"docSummary": summary}}
-            )
+            if doc.get("docSummary"):
+                summary = doc["docSummary"]
+            else:
+                summary = self.doc_chain.invoke({"context": text[:2000]})
+                self.db.ocrrecords.update_one({"_id": doc["_id"]}, {"$set": {"docSummary": summary}})
 
             doc_summaries.append(summary)
+            doc_entities[str(doc["_id"])] = self._extract_entities(text)
 
-        # 🔥 STEP 3 — Folder synthesis
-        combined = "\n\n---\n\n".join(doc_summaries)
+        entity_graph = self._build_entity_graph(doc_entities)
 
-        logger.info("Generating folder-level summary")
+        combined = "\n\n".join(doc_summaries)
+        final_summary = self.structured_chain.invoke({"context": combined})
 
-        final_summary = self.chain.invoke({
-            "context": combined,
-            "question": "Provide an overall summary of all documents."
-        })
-
-        # 🔥 STEP 4 — Save result + fingerprint
         self.db.folderanalysis.update_one(
             {"folderId": folder_object_id},
-            {
-                "$set": {
-                    "finalSummary": final_summary,
-                    "fingerprint": current_fingerprint
-                }
-            },
+            {"$set": {
+                "finalSummary": final_summary,
+                "fingerprint": fingerprint,
+                "entityGraph": entity_graph
+            }},
             upsert=True
         )
 
-        logger.info("Folder analysis complete and cached.")
-
-        return final_summary
+        return {
+            "summary": final_summary,
+            "entity_graph": entity_graph
+        }

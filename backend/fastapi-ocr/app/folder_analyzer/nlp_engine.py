@@ -1,35 +1,84 @@
 import re
-import spacy
-from collections import Counter
-
-nlp = spacy.load("en_core_web_sm")
-STOPWORDS = nlp.Defaults.stop_words
+from typing import Dict, List
 
 
-def clean_text(text: str) -> str:
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+def extract_entities_and_keywords(text: str) -> Dict:
+    """
+    Extract structured entities with classification.
+    """
 
+    entities = []
+    keywords = []
 
-def extract_entities_and_keywords(text: str):
-    doc = nlp(text)
+    # ---------------------------
+    # PERSON (simple pattern)
+    # ---------------------------
+    person_matches = re.findall(r"\b[A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2}\b", text)
+    for p in person_matches:
+        entities.append({"text": p, "label": "PERSON"})
 
-    entities = [
-        ent.text.strip()
-        for ent in doc.ents
-        if ent.text.strip()
+    # ---------------------------
+    # ORG
+    # ---------------------------
+    org_patterns = [
+        r"Delhi Police",
+        r"Police Department",
+        r"SPECIAL BRANCH",
+        r"District/Unit"
     ]
+    for pat in org_patterns:
+        for match in re.findall(pat, text, re.IGNORECASE):
+            entities.append({"text": match, "label": "ORG"})
 
-    keywords = [
-        token.lemma_.lower()
-        for token in doc
-        if token.is_alpha
-        and token.text.lower() not in STOPWORDS
-        and len(token.text) > 2
+    # ---------------------------
+    # DATE
+    # ---------------------------
+    dates = re.findall(r"\b\d{1,2}/\d{1,2}/\d{4}\b", text)
+    for d in dates:
+        entities.append({"text": d, "label": "DATE"})
+
+    # ---------------------------
+    # LEGAL CASE (FIR)
+    # ---------------------------
+    firs = re.findall(r"FIR\s?\d+/?\d*", text, re.IGNORECASE)
+    for f in firs:
+        entities.append({"text": f, "label": "LEGAL_CASE"})
+
+    # ---------------------------
+    # ACCOUNT NUMBERS
+    # ---------------------------
+    accounts = re.findall(r"\b\d{12,20}\b", text)
+    for a in accounts:
+        entities.append({"text": a, "label": "ACCOUNT"})
+
+    # ---------------------------
+    # LOCATIONS
+    # ---------------------------
+    loc_patterns = [
+        r"Rohini Jail",
+        r"Tihar Jail",
+        r"Delhi",
+        r"New Delhi"
     ]
+    for pat in loc_patterns:
+        for match in re.findall(pat, text, re.IGNORECASE):
+            entities.append({"text": match, "label": "LOCATION"})
+
+    # ---------------------------
+    # KEYWORDS
+    # ---------------------------
+    base_keywords = [
+        "court", "police", "criminal", "dossier",
+        "prisoner", "adjourn", "district"
+    ]
+    for word in base_keywords:
+        if word in text.lower():
+            keywords.append(word)
+
+    # Remove duplicates
+    unique_entities = { (e["text"], e["label"]): e for e in entities }
 
     return {
-        "entities": entities,                 # flat list
-        "keywords": Counter(keywords).most_common(10)
+        "entities": list(unique_entities.values()),
+        "keywords": list(set(keywords))
     }
-

@@ -33,8 +33,37 @@ def top_k(counter_data: Any, k: int = 5) -> List[Tuple[str, int]]:
 
 
 def _labels(top_items: List[Tuple[str, int]]) -> List[str]:
-    """Extract string labels only (safe for join)."""
     return [str(k) for k, _ in top_items]
+
+
+# 🔥 NEW — SAFE NORMALIZATION
+def normalize_terms(items):
+    """
+    Converts NLP entities/keywords into plain string list.
+    Handles:
+    - "Delhi"
+    - {"text": "Delhi", "label": "GPE"}
+    - {"word": "Police"}
+    - ("Delhi", 3)
+    """
+    results = []
+
+    for item in items or []:
+        if isinstance(item, str):
+            results.append(item)
+
+        elif isinstance(item, dict):
+            results.append(
+                item.get("text")
+                or item.get("word")
+                or item.get("label")
+                or ""
+            )
+
+        elif isinstance(item, (list, tuple)) and len(item) > 0:
+            results.append(str(item[0]))
+
+    return [r for r in results if r]
 
 
 def build_folder_tree(files):
@@ -56,8 +85,12 @@ def build_folder_tree(files):
         size_kb = float(f.get("size_kb") or 0)
         total_size_kb += size_kb
 
-        file_entities = Counter(f.get("nlp_entities") or {})
-        file_keywords = Counter(f.get("nlp_keywords") or {})
+        # ✅ FIX — NORMALIZE BEFORE COUNTER
+        entity_texts = normalize_terms(f.get("nlp_entities"))
+        keyword_texts = normalize_terms(f.get("nlp_keywords"))
+
+        file_entities = Counter(entity_texts)
+        file_keywords = Counter(keyword_texts)
 
         folder_entities.update(file_entities)
         folder_keywords.update(file_keywords)

@@ -141,31 +141,47 @@ def chat_worker(payload: ChatRequest) -> dict:
     if not payload.query:
         raise HTTPException(status_code=400, detail="Query is required")
 
-    context_id = payload.user_id
+    active_context_id = None
 
     if payload.link:
-        context_id = utils.extract_video_id(payload.link)
+        active_context_id = utils.extract_video_id(payload.link)
+    else:
+        last_record = mongo_ocr_col.find_one(
+            {"userId": payload.user_id},
+            sort=[("createdAt", -1)]
+        )
+        if last_record:
+            active_context_id = (
+                utils.extract_video_id(last_record.get("originalFilename", ""))
+                or payload.user_id
+            )
+
+    context_id = active_context_id or payload.user_id
+    print(f"💬 Chat | Context: {context_id}")
 
     manager = vector_store.VectorStoreManager(context_id)
 
-    if payload.link:
+    if payload.link and active_context_id:
         fetcher = transcript_fetcher.TranscriptFetcher()
         transcript = fetcher.fetch_transcript(payload.link)
+        if not transcript:
+            raise HTTPException(status_code=404, detail="Transcript not found")
         manager.create_vector_store(transcript)
 
     if not manager.load_vector_store():
-        raise HTTPException(status_code=404, detail="No context found")
+        manager = vector_store.VectorStoreManager(payload.user_id)
+        if not manager.load_vector_store():
+            raise HTTPException(
+                status_code=404,
+                detail="No active context found. Provide a link first."
+            )
 
     retriever = manager.get_retriever()
     rag = rag_chain.RAGChain(retriever)
-    answer = rag.query(payload.query)
+    raw_answer = rag.query(payload.query)
 
-    entities = perform_ner(answer)
+    return {"answer": clean_ai_response(raw_answer)}
 
-    return {
-        "answer": clean_ai_response(answer),
-        "entities": entities
-    }
 
 # ============================================================
 # NOTEBOOKLM REPORT STREAM WORKER (UNCHANGED)

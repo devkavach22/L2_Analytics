@@ -1,8 +1,3 @@
-"""
-Global Vector Store Module using ChromaDB + LlamaIndex (Production Safe)
-ONE persistent vector DB for entire app (NotebookLM architecture)
-"""
-
 import os
 import sys
 import re
@@ -17,7 +12,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document as LCDocument
 
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.core import VectorStoreIndex, StorageContext, Document as LIDocument
+from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 
@@ -28,17 +23,17 @@ import config
 class VectorStoreManager:
     """
     Global Chroma Vector Store Manager
-    SINGLE DB for entire application (no per-file collections)
+    SINGLE DB for entire application
     """
 
-    def __init__(self, namespace: str):
-        safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", namespace)
-        safe_id = safe_id.strip("_")[:120]
+    def __init__(self, video_id: str):
+        # Only video_id needed
+        self.video_id = video_id
 
-        self.namespace = namespace
-        self.safe_id = safe_id
+        # Clean ID for metadata safety
+        self.safe_video_id = re.sub(r"[^a-zA-Z0-9._-]", "_", video_id).strip("_")[:120]
 
-        # 🔥 ONE GLOBAL COLLECTION
+        # 🔥 ONE GLOBAL COLLECTION FOR ALL DATA
         self.collection_name = f"{config.CHROMA_COLLECTION_NAME}_global"
 
         self.persist_directory = config.CHROMA_PERSIST_DIRECTORY
@@ -46,10 +41,11 @@ class VectorStoreManager:
         # LangChain embeddings
         self.embeddings = HuggingFaceEmbeddings(
             model_name=config.HUGGINGFACE_EMBEDDING_MODEL,
-            encode_kwargs={"normalize_embeddings": True},
+            encode_kwargs={"normalize_embeddings": True}
+            # huggingfacehub_api_token=os.getenv("HUGGINGFACE_INFERENCE_API_TOKEN")
         )
 
-        # LlamaIndex embeddings (same model)
+        # LlamaIndex embeddings
         self.llama_embeddings = HuggingFaceEmbedding(
             model_name=config.HUGGINGFACE_EMBEDDING_MODEL
         )
@@ -68,46 +64,80 @@ class VectorStoreManager:
         self.llama_index: Optional[VectorStoreIndex] = None
 
     # ---------------------------------------------------------
-    # ✅ GLOBAL STORE (NEVER DELETED / NEVER RECREATED)
+    # CREATE VECTOR STORE (for new transcript ingestion)
+    # ---------------------------------------------------------
+    def create_vector_store(self, transcript_text: str) -> Chroma:
+        documents = self.text_splitter.create_documents([transcript_text])
+
+        for i, doc in enumerate(documents):
+            doc.metadata = {
+                'video_id': self.safe_video_id,
+                'chunk_index': i,
+                'source': 'youtube_transcript'
+            }
+
+        # ⚠ GLOBAL DB → DO NOT DELETE COLLECTION
+        self.vector_store = self.get_or_create_store()
+        self.vector_store.add_documents(documents)
+        self.vector_store.persist()
+
+        self._load_llama_index()
+        return self.vector_store
+
+    # ---------------------------------------------------------
+    # LOAD STORE
+    # ---------------------------------------------------------
+    def load_vector_store(self) -> Optional[Chroma]:
+        try:
+            self.vector_store = Chroma(
+                collection_name=self.collection_name,
+                embedding_function=self.embeddings,
+                persist_directory=self.persist_directory,
+                client=self.client
+            )
+            self._load_llama_index()
+            return self.vector_store
+        except:
+            return None
+
+    # ---------------------------------------------------------
+    # GET OR CREATE GLOBAL STORE
     # ---------------------------------------------------------
     def get_or_create_store(self):
         if self.vector_store:
             return self.vector_store
 
-        try:
-            self.vector_store = Chroma(
-                collection_name=self.collection_name,
-                embedding_function=self.embeddings,
-                persist_directory=self.persist_directory
-            )
-        except Exception:
-            self.vector_store = Chroma(
-                collection_name=self.collection_name,
-                embedding=self.embeddings,
-                persist_directory=self.persist_directory
-            )
-
+        self.vector_store = Chroma(
+            collection_name=self.collection_name,
+            embedding_function=self.embeddings,
+            persist_directory=self.persist_directory,
+            client=self.client
+        )
         return self.vector_store
 
-
-    def add_documents(self, documents: list):
+    # ---------------------------------------------------------
+    # ADD DOCUMENTS LATER
+    # ---------------------------------------------------------
+    def add_documents(self, documents: List[LCDocument]):
         store = self.get_or_create_store()
         store.add_documents(documents)
         store.persist()
-
+        self._load_llama_index()
 
     # ---------------------------------------------------------
-    # 🔹 LangChain Retriever
+    # LANGCHAIN RETRIEVER
     # ---------------------------------------------------------
     def get_retriever(self, k: int = None):
+        if self.vector_store is None:
+            raise ValueError("Vector store not initialized.")
+
         if k is None:
             k = config.RETRIEVAL_K
 
-        store = self.get_or_create_store()
-        return store.as_retriever(search_kwargs={"k": k})
+        return self.vector_store.as_retriever(search_kwargs={"k": k})
 
     # ---------------------------------------------------------
-    # 🔥 LlamaIndex Query Engine
+    # LLAMAINDEX QUERY ENGINE
     # ---------------------------------------------------------
     def get_llama_query_engine(self):
         if self.llama_index is None:
@@ -120,13 +150,10 @@ class VectorStoreManager:
             max_new_tokens=2048,
         )
 
-        return self.llama_index.as_query_engine(
-            llm=llm,
-            similarity_top_k=3,
-        )
+        return self.llama_index.as_query_engine(llm=llm, similarity_top_k=3)
 
     # ---------------------------------------------------------
-    # 🔹 Internal: Load LlamaIndex from Chroma
+    # LOAD LLAMAINDEX FROM CHROMA
     # ---------------------------------------------------------
     def _load_llama_index(self):
         chroma_collection = self.client.get_or_create_collection(
@@ -135,9 +162,7 @@ class VectorStoreManager:
 
         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
 
-        storage_context = StorageContext.from_defaults(
-            vector_store=vector_store
-        )
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
         self.llama_index = VectorStoreIndex.from_vector_store(
             vector_store=vector_store,
@@ -145,6 +170,16 @@ class VectorStoreManager:
             embed_model=self.llama_embeddings,
         )
 
+    # ---------------------------------------------------------
+    # DELETE EVERYTHING (optional admin use)
+    # ---------------------------------------------------------
+    def delete_vector_store(self):
+        try:
+            self.client.delete_collection(name=self.collection_name)
+            self.vector_store = None
+            self.llama_index = None
+        except:
+            pass
 
 
 # """
