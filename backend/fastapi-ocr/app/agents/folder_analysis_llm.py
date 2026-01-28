@@ -1,7 +1,9 @@
 import os
 import re
+import json
 import hashlib
 import logging
+from collections import Counter
 from bson import ObjectId
 from pymongo import MongoClient
 from langchain.prompts import ChatPromptTemplate
@@ -23,32 +25,26 @@ class FolderAnalysisAgent:
         self.client = MongoClient(mongo_url)
         self.db = self.client[db_name]
 
-        # 🔥 PROFESSIONAL ANALYST PROMPT
-        self.structured_prompt = ChatPromptTemplate.from_messages([
+        # 🔥 STRICT NOTEBOOKLM-STYLE PROMPT (PRESERVED)
+        self.case_prompt = ChatPromptTemplate.from_messages([
             ("system",
-             "You are a professional intelligence analyst.\n"
-             "Write a structured analytical brief.\n"
-             "Do NOT mention OCR, documents, or sources.\n"
-             "Do NOT use phrases like 'Based on' or 'According to'."),
+             "You are a senior criminal intelligence analyst.\n"
+             "The input represents a consolidated government criminal justice profile.\n"
+             "Write a formal institutional case brief.\n"
+             "DO NOT mention documents, files, OCR, PDFs, or sources.\n"
+             "Write in an administrative, neutral, authoritative tone.\n"
+             "Explain who the individual is, what system they are tracked in,\n"
+             "their custodial history, criminal charges, court oversight,\n"
+             "and the monitoring purpose of the profile.\n"
+             "Write a single unified narrative paragraph.\n"
+             "If information is missing, omit it."),
             ("human",
-             "Information:\n{context}\n\n"
-             "Prepare structured sections:\n"
-             "1. Document Types Represented\n"
-             "2. Key Individuals and Entities\n"
-             "3. Chronological Highlights\n"
-             "4. Financial Indicators\n"
-             "5. Legal or Criminal Matters\n"
-             "6. Patterns and Observations\n"
-             "7. Information Gaps")
+             "COMBINED CASE CONTEXT:\n{combined_context}\n\n"
+             "STRUCTURED CASE SIGNALS:\n{signals}\n\n"
+             "Write the full case intelligence brief.")
         ])
 
-        self.doc_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Provide a short factual summary."),
-            ("human", "{context}")
-        ])
-
-        self.doc_chain = self.doc_prompt | self.llm | StrOutputParser()
-        self.structured_chain = self.structured_prompt | self.llm | StrOutputParser()
+        self.case_chain = self.case_prompt | self.llm | StrOutputParser()
 
     # --------------------------------------------------
     def _clean_ocr_text(self, text):
@@ -60,55 +56,112 @@ class FolderAnalysisAgent:
         return hashlib.md5(raw.encode()).hexdigest()
 
     # --------------------------------------------------
-    # 🔥 ENTITY TYPE CLASSIFIER
-    def _classify_entity(self, e):
-        if re.search(r'\d{2}/\d{2}/\d{4}', e):
-            return "DATE"
-        if re.search(r'\b\d{10,}\b', e):
-            return "ACCOUNT"
-        if "FIR" in e or "IPC" in e:
-            return "LEGAL_CASE"
-        if any(k in e.lower() for k in ["police", "court", "branch"]):
-            return "ORG"
-        if any(k in e.lower() for k in ["jail", "prison", "district", "delhi"]):
-            return "LOCATION"
-        if e.istitle():
-            return "PERSON"
-        return "OTHER"
+    # BASIC EXTRACTION (PRESERVED)
+    def _extract_people(self, text):
+        return re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)+\b', text)
+
+    def _extract_cases(self, text):
+        return re.findall(r'FIR\s*\d+/?\d*|IPC\s*\d+', text)
+
+    def _extract_locations(self, text):
+        return re.findall(
+            r'(Tihar Jail|Mandoli Jail|Delhi|Haryana|Rohini|Court|High Court|District Court)',
+            text
+        )
+
+    def _extract_dates(self, text):
+        return re.findall(r'\b\d{1,2}/\d{1,2}/\d{4}\b', text)
+
+    def _extract_money(self, text):
+        return re.findall(r'₹\s?\d{2,7}', text)
 
     # --------------------------------------------------
-    def _extract_entities(self, text):
-        found = set()
+    # 🔥 COMBINED SEMANTIC CONTEXT (KEY FIX)
+    def _build_combined_case_context(self, docs):
+        merged_text = []
 
-        found.update(re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)+\b', text))
-        found.update(re.findall(r'\bFIR\s*\d+/?\d*\b', text))
-        found.update(re.findall(r'\b\d{2}/\d{2}/\d{4}\b', text))
-        found.update(re.findall(r'\b\d{10,}\b', text))
+        for doc in docs:
+            text = self._clean_ocr_text(doc.get("extractedText", ""))
+            if text:
+                merged_text.append(text)
 
-        entities = [{"name": e, "type": self._classify_entity(e)} for e in found]
-        return entities
+        combined = "\n".join(merged_text)
+        return combined[:12000]
 
     # --------------------------------------------------
-    def _build_entity_graph(self, doc_entities):
-        nodes = {}
+    # STRUCTURED SIGNALS (PRESERVED)
+    def _build_case_signals(self, docs):
+
+        people = Counter()
+        cases = Counter()
+        locations = Counter()
+        dates = []
+        money = []
+
+        incarceration_refs = 0
+        court_refs = 0
+        visitation_refs = 0
+
+        for doc in docs:
+            text = self._clean_ocr_text(doc.get("extractedText", ""))[:5000]
+
+            people.update(self._extract_people(text))
+            cases.update(self._extract_cases(text))
+            locations.update(self._extract_locations(text))
+            dates.extend(self._extract_dates(text))
+            money.extend(self._extract_money(text))
+
+            if re.search(r'jail|custody|prison|barrack', text, re.I):
+                incarceration_refs += 1
+
+            if re.search(r'court|hearing|production|remand', text, re.I):
+                court_refs += 1
+
+            if re.search(r'visit|mulakat|family', text, re.I):
+                visitation_refs += 1
+
+        signals = {
+            "Primary Individuals": people.most_common(3),
+            "Criminal References": cases.most_common(10),
+            "Institutional Locations": locations.most_common(10),
+            "Key Dates": sorted(set(dates))[:20],
+            "Financial Indicators": sorted(set(money))[:10],
+            "Administrative Coverage": {
+                "Custodial Tracking": incarceration_refs > 0,
+                "Judicial Oversight": court_refs > 0,
+                "Family Visitation Logs": visitation_refs > 0
+            }
+        }
+
+        return json.dumps(signals, indent=2)
+
+    # --------------------------------------------------
+    # 🔥 NEW: FILE-LEVEL DETAIL + GRAPH NODES
+    def _build_entity_graph(self, docs):
+
+        nodes = []
         edges = []
 
-        for entities in doc_entities.values():
-            for e in entities:
-                nodes[e["name"]] = {"id": e["name"], "type": e["type"]}
+        for doc in docs:
+            text = self._clean_ocr_text(doc.get("extractedText", ""))
 
-        # co-occurrence links
-        for entities in doc_entities.values():
-            names = [e["name"] for e in entities]
-            for i in range(len(names)):
-                for j in range(i+1, len(names)):
-                    edges.append({
-                        "source": names[i],
-                        "target": names[j],
-                        "relation": "co_occurrence"
-                    })
+            nodes.append({
+                "id": str(doc["_id"]),
+                "label": doc.get("fileName", "Unknown File"),
+                "type": "file",
+                "details": {
+                    "content_length": len(text),
+                    "people": list(set(self._extract_people(text))),
+                    "cases": list(set(self._extract_cases(text))),
+                    "locations": list(set(self._extract_locations(text))),
+                    "dates": list(set(self._extract_dates(text)))
+                }
+            })
 
-        return {"nodes": list(nodes.values()), "edges": edges}
+        return {
+            "nodes": nodes,
+            "edges": edges
+        }
 
     # --------------------------------------------------
     def analyze(self, folder_id):
@@ -117,40 +170,31 @@ class FolderAnalysisAgent:
         ocr_docs = list(self.db.ocrrecords.find({"folderId": folder_object_id}))
 
         if not ocr_docs:
-            return {"summary": "Insufficient information available.", "entity_graph": {}}
+            return {
+                "summary": "Insufficient information available to construct a case profile.",
+                "entity_graph": {}
+            }
 
         fingerprint = self._generate_folder_fingerprint(ocr_docs)
         folder_record = self.db.folderanalysis.find_one({"folderId": folder_object_id})
 
         if folder_record and folder_record.get("fingerprint") == fingerprint:
-            logger.info("Using cached analysis")
             return {
                 "summary": folder_record["finalSummary"],
                 "entity_graph": folder_record.get("entityGraph", {})
             }
 
-        logger.info("Running fresh analysis")
+        logger.info("Running NotebookLM-style combined case synthesis")
 
-        doc_summaries = []
-        doc_entities = {}
+        combined_context = self._build_combined_case_context(ocr_docs)
+        case_signals = self._build_case_signals(ocr_docs)
 
-        # 🔥 ENTITY EXTRACTION RUNS FOR ALL DOCS
-        for doc in ocr_docs:
-            text = self._clean_ocr_text(doc.get("extractedText", ""))
+        final_summary = self.case_chain.invoke({
+            "combined_context": combined_context,
+            "signals": case_signals
+        })
 
-            if doc.get("docSummary"):
-                summary = doc["docSummary"]
-            else:
-                summary = self.doc_chain.invoke({"context": text[:2000]})
-                self.db.ocrrecords.update_one({"_id": doc["_id"]}, {"$set": {"docSummary": summary}})
-
-            doc_summaries.append(summary)
-            doc_entities[str(doc["_id"])] = self._extract_entities(text)
-
-        entity_graph = self._build_entity_graph(doc_entities)
-
-        combined = "\n\n".join(doc_summaries)
-        final_summary = self.structured_chain.invoke({"context": combined})
+        entity_graph = self._build_entity_graph(ocr_docs)
 
         self.db.folderanalysis.update_one(
             {"folderId": folder_object_id},

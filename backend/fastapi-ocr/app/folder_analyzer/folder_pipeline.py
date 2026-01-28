@@ -15,43 +15,25 @@ from app.folder_analyzer.analysis_engine import (
 )
 
 from app.folder_analyzer.trend_analyzer import analyze_trends
-from app.folder_analyzer.entity_aggregator import aggregate_entities_and_keywords
 from app.folder_analyzer.embedding_engine import embed_text
 from app.folder_analyzer.content_indexer import index_folder_to_vector_store
-from app.folder_analyzer.nlp_engine import extract_entities_and_keywords
 from app.agents.folder_analysis_llm import FolderAnalysisAgent
 from app.ocr_utils import extract_text_from_file
 
-
-# -------------------------------------------------
-# NORMALIZATION UTILITY
-# -------------------------------------------------
-def normalize_terms(items, limit=5):
-    results = []
-    for item in items[:limit]:
-        if isinstance(item, str):
-            results.append(item)
-        elif isinstance(item, dict):
-            results.append(
-                item.get("text")
-                or item.get("label")
-                or item.get("name")
-                or str(item)
-            )
-        elif isinstance(item, (list, tuple)):
-            if len(item) > 0:
-                results.append(str(item[0]))
-        else:
-            results.append(str(item))
-    return results
+# 🔥 ENTITY ENGINE
+from app.folder_analyzer.entity_engine import (
+    extract_entities,
+    extract_keywords,
+    build_entity_table,
+    build_relationship_graph
+)
 
 
 # -------------------------------------------------
-# VECTOR CONTEXT BUILDER
+# VECTOR CONTEXT BUILDER (PRESERVED)
 # -------------------------------------------------
 def build_folder_context(files: List[Dict]) -> str:
     sections = []
-
     for f in files:
         text = f.get("ocr_text", "").strip()
         if not text:
@@ -60,7 +42,7 @@ def build_folder_context(files: List[Dict]) -> str:
         sections.append(
             f"FILE: {f.get('file_name')}\n"
             f"SIZE_KB: {f.get('size_kb')}\n"
-            f"CONTENT:\n{text[:4000]}"
+            f"CONTENT:\n{text[:2000]}"
         )
 
     return "\n\n---\n\n".join(sections)
@@ -76,23 +58,19 @@ def run_folder_analysis(folder_id: str, user_id: str, folder_path: str) -> Dict:
         return {"total_files": 0, "error": "No files found"}
 
     # -------------------------------------------------
-    # OCR FALLBACK + ENTITY STORAGE
+    # OCR + NLP EXTRACTION
     # -------------------------------------------------
     for f in files:
         file_path = f.get("file_path")
         file_name = f.get("file_name") or "unknown"
 
+        # OCR fallback (PRESERVED)
         if not f.get("ocr_text") and file_path and os.path.exists(file_path):
             try:
                 with open(file_path, "rb") as fp:
                     text = extract_text_from_file(fp.read(), file_name)
 
                 f["ocr_text"] = text.strip()
-
-                # 🔥 NLP extraction BEFORE saving
-                nlp = extract_entities_and_keywords(f["ocr_text"])
-                f["nlp_entities"] = nlp.get("entities", [])
-                f["nlp_keywords"] = nlp.get("keywords", [])
 
                 upsert_ocr_record(
                     file_id=f["file_id"],
@@ -101,35 +79,60 @@ def run_folder_analysis(folder_id: str, user_id: str, folder_path: str) -> Dict:
                     user_id=user_id,
                     extracted_text=f["ocr_text"],
                     confidence=1.0,
-                    entities=f["nlp_entities"]
+                    entities=[]
                 )
 
             except Exception:
                 f["ocr_text"] = ""
-                f["nlp_entities"] = []
-                f["nlp_keywords"] = []
+
+        text = f.get("ocr_text", "").strip()
+
+        # 🔥 ENTITY + KEYWORD EXTRACTION
+        entities = extract_entities(text) if text else []
+        keywords = extract_keywords(text) if text else []
+
+        f["nlp_entities"] = entities
+        f["nlp_keywords"] = keywords
+
+        # 🔥 ENTITY TABLE (TOP 5)
+        f["entity_table"] = build_entity_table(entities)
+
+        # 🔥 EMBEDDINGS
+        f["embedding"] = embed_text(text) if len(text) > 20 else None
+
+        # 🔥 NEW: BASIC FILE DETAILS (CLICK POPUP READY)
+        f["file_details"] = {
+            "file_id": f.get("file_id"),
+            "file_name": file_name,
+            "size_kb": f.get("size_kb"),
+            "content_length": len(text),
+            "entity_count": len(entities),
+            "keyword_count": len(keywords),
+            "entities": entities[:10],
+            "keywords": keywords[:10]
+        }
 
     # -------------------------------------------------
-    # VECTOR STORE INDEXING (FIXED)
+    # VECTOR STORE INDEXING
     # -------------------------------------------------
     folder_context = build_folder_context(files)
     index_folder_to_vector_store(folder_id, user_id, context=folder_context)
 
     # -------------------------------------------------
-    # EMBEDDINGS + NLP (FOR EXISTING TEXT)
+    # ENTITY GRAPH + RELATIONSHIPS
     # -------------------------------------------------
-    for f in files:
-        text = f.get("ocr_text", "").strip()
+    relationship_graph = build_relationship_graph(files)
 
-        f["embedding"] = embed_text(text) if len(text) > 20 else None
+    file_entities_output = {
+        f["file_name"]: f.get("entity_table", [])[:5]
+        for f in files
+    }
 
-        if text and not f.get("nlp_entities"):
-            nlp = extract_entities_and_keywords(text)
-            f["nlp_entities"] = nlp.get("entities", [])
-            f["nlp_keywords"] = nlp.get("keywords", [])
-        else:
-            f.setdefault("nlp_entities", [])
-            f.setdefault("nlp_keywords", [])
+    # 🔥 NEW: FILE DETAIL MAP (FOR GRAPH CLICKS)
+    file_details_map = {
+        f["file_id"]: f.get("file_details", {})
+        for f in files
+    }
 
     # -------------------------------------------------
     # NON-LLM ANALYSIS
@@ -138,8 +141,6 @@ def run_folder_analysis(folder_id: str, user_id: str, folder_path: str) -> Dict:
     timeline = analyze_timeline(files)
     health = analyze_folder_health(files)
     content_profile = analyze_content_profile(files)
-
-    aggregation = aggregate_entities_and_keywords(files)
     trends = analyze_trends(files)
 
     folder_tree = build_folder_tree(files)
@@ -148,37 +149,45 @@ def run_folder_analysis(folder_id: str, user_id: str, folder_path: str) -> Dict:
     charts = build_charts(files)
 
     # -------------------------------------------------
-    # 🔥 LLM STRUCTURED INTELLIGENCE (AUTO-CACHED)
+    # LLM INTELLIGENCE
     # -------------------------------------------------
     llm = FolderAnalysisAgent()
     llm_result = llm.analyze(folder_id=folder_id)
 
     llm_insights = {
         "summary_text": llm_result.get("summary", ""),
-        "entity_graph": llm_result.get("entity_graph", {}),
-        "risks": "Legal, financial, and behavioral signals inferred from document patterns.",
-        "themes": "Recurring institutional, financial, and legal themes detected."
+        "entity_graph": llm_result.get("entity_graph", {})
     }
 
     # -------------------------------------------------
-    # FINAL RESPONSE
+    # FINAL RESPONSE (STRUCTURED + UI READY)
     # -------------------------------------------------
     return {
         "auto_summary": llm_insights["summary_text"],
+
+        # 🔥 CORE ANALYTICS
         "structure": structure,
         "timeline": timeline,
         "health": health,
         "content_profile": content_profile,
-        "entities": aggregation["entities"],
-        "keywords": aggregation["keywords"],
         "trends": trends,
+
+        # 🔥 ENTITY INTELLIGENCE
+        "file_entities": file_entities_output,
+        "file_details": file_details_map,
+        "relationships": relationship_graph,
+
+        # 🔥 VISUALIZATION
         "folder_tree": folder_tree,
         "semantic_graph": semantic_graph,
+        "llm_entity_graph": llm_insights["entity_graph"],
         "file_scores": file_scores,
         "charts": charts,
-        "llm_insights": llm_insights,
+
         "total_files": len(files)
     }
+
+
 
 
 # import os
