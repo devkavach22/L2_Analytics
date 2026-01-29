@@ -1,0 +1,4 @@
+# Chroma / Vector DB artifacts
+chroma_db/
+*.sqlite3
+*.db
